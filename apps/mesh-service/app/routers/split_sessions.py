@@ -1,22 +1,28 @@
 """
-Router de planejamento de sessões de corte (split sessions).
+Router de planejamento e execução de sessões de corte (split sessions).
 
-Implementa o passo 2-3 do fluxo da seção 6.4 do AGENTS.md:
-- Compara a bounding box do modelo com as dimensões da mesa de trabalho.
-- Se não couber, calcula o número mínimo de cortes por eixo e as posições sugeridas.
-- Persiste uma split_session com status='draft' no banco.
+Fase 4 — planejamento (POST /split-sessions):
+  Seção 6.4 passo 2-3: compara bbox do modelo com a mesa, calcula planos sugeridos,
+  persiste split_session com status='draft'.
 
-O corte real (passo 5) será implementado na Fase 6 em POST /split-sessions/{id}/execute.
+Fase 5 — execução (POST /split-sessions/{id}/execute):
+  Seção 6.4 passo 5: verifica assinatura, baixa modelo, repara malha, executa corte
+  booleano com manifold3d, valida peças, salva STLs no Storage e linhas em `pieces`.
 """
 
 import logging
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from app.deps import get_supabase_client, verify_internal_token
+from app.mesh.cutter import CutPlaneInput, cut_mesh_by_planes
 from app.mesh.geometry import CutPlane, Dimensions, SplitPlan, compute_split_plan
+from app.mesh.repair import load_and_normalize, repair_mesh
+from app.storage import create_download_url, download_to_tempfile, upload_bytes
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["split-sessions"])
@@ -266,3 +272,323 @@ def _create_split_session(
     except Exception as exc:  # noqa: BLE001
         logger.error("_create_split_session falhou: %s", exc)
         return None
+
+
+# =============================================================================
+# FASE 5 — Endpoint de execução do corte booleano
+# =============================================================================
+
+
+# ---------------------------------------------------------------------------
+# Contratos de API — execute
+# ---------------------------------------------------------------------------
+
+
+class ExecuteCutPlane(BaseModel):
+    """Plano de corte confirmado pelo usuário após ajustes no frontend."""
+
+    normal: list[float]  # vetor normal normalizado, ex: [1.0, 0.0, 0.0]
+    origin: list[float]  # ponto no plano em coords. do modelo centrado, ex: [25.0, 0.0, 0.0]
+    label: str = ""
+
+
+class ExecuteRequest(BaseModel):
+    """Payload recebido pelo endpoint de execução."""
+
+    user_id: str
+    cut_planes: list[ExecuteCutPlane]
+
+
+class PieceOut(BaseModel):
+    """Metadados de uma peça gerada pelo corte."""
+
+    id: str
+    piece_index: int
+    storage_path: str
+    bounding_box_x_mm: float | None
+    bounding_box_y_mm: float | None
+    bounding_box_z_mm: float | None
+    fits_build_plate: bool
+
+
+class ExecuteResponse(BaseModel):
+    """Resultado completo da execução do corte."""
+
+    split_session_id: str
+    status: str
+    piece_count: int
+    pieces: list[PieceOut]
+
+
+# ---------------------------------------------------------------------------
+# Endpoint execute
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/split-sessions/{session_id}/execute",
+    response_model=ExecuteResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Executar o corte booleano de um modelo 3D",
+    description=(
+        "Etapa 5 da seção 6.4 do AGENTS.md. "
+        "Verifica assinatura ativa → baixa modelo → repara malha → "
+        "executa cortes com manifold3d → valida peças → salva STLs no Storage → "
+        "insere linhas em `pieces` → atualiza split_session para 'completed'."
+    ),
+)
+async def execute_split(
+    session_id: str,
+    payload: ExecuteRequest,
+    _auth: None = Depends(verify_internal_token),
+) -> ExecuteResponse:
+    """Executa o corte booleano real de um modelo 3D."""
+    supabase = _get_supabase_client()
+
+    # 1. Verificar assinatura ativa (seção 6.4 — acesso via assinatura)
+    if not _check_subscription(supabase, payload.user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Assinatura ativa necessária para executar o corte. "
+                "Faça upgrade do seu plano para liberar esta funcionalidade."
+            ),
+        )
+
+    # 2. Buscar sessão e verificar posse
+    session = _fetch_session(supabase, session_id, payload.user_id)
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sessão de corte não encontrada ou não pertence a este usuário.",
+        )
+    if session.get("status") not in ("draft", "failed"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"A sessão não pode ser executada com status '{session['status']}'. "
+                "Apenas sessões 'draft' ou 'failed' podem ser executadas."
+            ),
+        )
+
+    # 3. Marcar como em processamento
+    _update_session_status(supabase, session_id, "processing")
+
+    tmp_path: str | None = None
+    try:
+        # 4. Buscar metadados do modelo e da mesa de trabalho
+        model = _fetch_model_for_execute(supabase, session["model_id"], payload.user_id)
+        if model is None:
+            raise RuntimeError("Modelo não encontrado.")
+
+        plate = _fetch_build_plate(supabase, session["build_plate_id"], payload.user_id)
+        if plate is None:
+            raise RuntimeError("Mesa de trabalho não encontrada.")
+
+        # 5. Gerar URL assinada + baixar arquivo 3D
+        download_url = create_download_url(supabase, model["storage_path"], expires_in=600)
+        tmp_path = await download_to_tempfile(download_url, model["storage_path"])
+
+        # 6. Carregar, normalizar e reparar a malha
+        mesh = load_and_normalize(tmp_path)
+        mesh = repair_mesh(mesh)
+        logger.info(
+            "Malha carregada: verts=%d faces=%d watertight=%s",
+            len(mesh.vertices),
+            len(mesh.faces),
+            mesh.is_watertight,
+        )
+
+        # 7. Preparar planos de corte com os valores confirmados pelo usuário
+        cut_plane_inputs = [
+            CutPlaneInput(
+                normal=cp.normal,
+                origin=cp.origin,
+                label=cp.label,
+            )
+            for cp in payload.cut_planes
+        ]
+
+        # 8. Executar corte booleano com manifold3d (capping automático)
+        pieces = cut_mesh_by_planes(mesh, cut_plane_inputs)
+        logger.info("Corte concluído: %d peças geradas", len(pieces))
+
+        # 9. Validar, fazer upload e inserir cada peça no banco
+        plate_dims = {
+            "x": float(plate["build_volume_x_mm"]),
+            "y": float(plate["build_volume_y_mm"]),
+            "z": float(plate["build_volume_z_mm"]),
+        }
+
+        piece_rows: list[dict[str, Any]] = []
+        for i, piece in enumerate(pieces):
+            extents = piece.extents  # [x, y, z] — dimensões da bounding box
+
+            # Verificar se cabe na mesa (qualquer orientação — usa extents mínimo)
+            fits = (
+                float(extents[0]) <= plate_dims["x"]
+                and float(extents[1]) <= plate_dims["y"]
+                and float(extents[2]) <= plate_dims["z"]
+            )
+
+            # Exportar como STL binário
+            stl_bytes: bytes = piece.export(file_type="stl")
+
+            # Upload ao Storage: path = {user_id}/pieces/{session_id}/piece_{i}.stl
+            storage_path = f"{payload.user_id}/pieces/{session_id}/piece_{i}.stl"
+            upload_bytes(supabase, storage_path, stl_bytes)
+
+            # Inserir linha na tabela `pieces`
+            insert_result = (
+                supabase.table("pieces")
+                .insert(
+                    {
+                        "split_session_id": session_id,
+                        "piece_index": i,
+                        "storage_path": storage_path,
+                        "bounding_box_x_mm": round(float(extents[0]), 3),
+                        "bounding_box_y_mm": round(float(extents[1]), 3),
+                        "bounding_box_z_mm": round(float(extents[2]), 3),
+                        "fits_build_plate": fits,
+                    }
+                )
+                .select()
+                .single()
+                .execute()
+            )
+            if insert_result.data:
+                piece_rows.append(insert_result.data)
+
+        # 10. Atualizar split_session: status='completed', cut_planes confirmados
+        now_iso = datetime.now(timezone.utc).isoformat()
+        supabase.table("split_sessions").update(
+            {
+                "status": "completed",
+                "completed_at": now_iso,
+                "cut_planes": [
+                    {"normal": cp.normal, "origin": cp.origin, "label": cp.label}
+                    for cp in payload.cut_planes
+                ],
+            }
+        ).eq("id", session_id).execute()
+
+        logger.info(
+            "Sessão %s concluída com sucesso: %d peças salvas no Storage",
+            session_id,
+            len(piece_rows),
+        )
+
+        return ExecuteResponse(
+            split_session_id=session_id,
+            status="completed",
+            piece_count=len(piece_rows),
+            pieces=[
+                PieceOut(
+                    id=row["id"],
+                    piece_index=row["piece_index"],
+                    storage_path=row["storage_path"],
+                    bounding_box_x_mm=row.get("bounding_box_x_mm"),
+                    bounding_box_y_mm=row.get("bounding_box_y_mm"),
+                    bounding_box_z_mm=row.get("bounding_box_z_mm"),
+                    fits_build_plate=row["fits_build_plate"],
+                )
+                for row in piece_rows
+            ],
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        error_msg = str(exc)
+        logger.error("Erro na execução da sessão %s: %s", session_id, error_msg)
+        _update_session_status(
+            supabase, session_id, "failed", error_message=error_msg[:1000]
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao executar o corte: {error_msg}",
+        )
+    finally:
+        # Limpar arquivo temporário
+        if tmp_path:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Helpers — execute (isolados para testabilidade)
+# ---------------------------------------------------------------------------
+
+
+def _check_subscription(supabase: Any, user_id: str) -> bool:
+    """Verifica se o usuário tem assinatura ativa em subscriptions."""
+    try:
+        result = (
+            supabase.table("subscriptions")
+            .select("id")
+            .eq("user_id", user_id)
+            .eq("status", "active")
+            .limit(1)
+            .execute()
+        )
+        return bool(result.data)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _fetch_session(supabase: Any, session_id: str, user_id: str) -> dict[str, Any] | None:
+    """Busca split_session verificando que pertence ao user_id."""
+    try:
+        result = (
+            supabase.table("split_sessions")
+            .select("id, model_id, build_plate_id, status, user_id")
+            .eq("id", session_id)
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+        return result.data  # type: ignore[return-value]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("_fetch_session falhou: %s", exc)
+        return None
+
+
+def _fetch_model_for_execute(
+    supabase: Any, model_id: str, user_id: str
+) -> dict[str, Any] | None:
+    """Busca o modelo com storage_path para o endpoint execute."""
+    try:
+        result = (
+            supabase.table("models")
+            .select("id, user_id, storage_path, format")
+            .eq("id", model_id)
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+        return result.data  # type: ignore[return-value]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("_fetch_model_for_execute falhou: %s", exc)
+        return None
+
+
+def _update_session_status(
+    supabase: Any,
+    session_id: str,
+    new_status: str,
+    completed_at: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    """Atualiza o status da split_session no banco."""
+    data: dict[str, Any] = {"status": new_status}
+    if completed_at:
+        data["completed_at"] = completed_at
+    if error_message:
+        data["error_message"] = error_message
+    try:
+        supabase.table("split_sessions").update(data).eq("id", session_id).execute()
+    except Exception as exc:  # noqa: BLE001
+        logger.error("_update_session_status falhou para %s: %s", session_id, exc)
+

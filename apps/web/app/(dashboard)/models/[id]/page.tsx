@@ -42,6 +42,16 @@ export default async function ModelDetailPage({ params }: PageProps) {
     .order("is_default", { ascending: false })
     .order("created_at", { ascending: true });
 
+  // Verificar se o usuário tem assinatura ativa
+  const { data: subscription } = await supabase
+    .from("subscriptions")
+    .select("id")
+    .eq("user_id", user.id)
+    .eq("status", "active")
+    .limit(1)
+    .single();
+
+  const hasSubscription = !!subscription;
   const typedModel = model as Model;
   const typedPlates = (buildPlates ?? []) as BuildPlate[];
   const status = STATUS_CONFIG[typedModel.printability_status];
@@ -130,8 +140,12 @@ export default async function ModelDetailPage({ params }: PageProps) {
         )}
       </div>
 
-      {/* Visualizador 3D */}
-      <ModelViewer model={typedModel} buildPlates={typedPlates} />
+      {/* Visualizador 3D + editor de cortes */}
+      <ModelViewer
+        model={typedModel}
+        buildPlates={typedPlates}
+        hasSubscription={hasSubscription}
+      />
 
       {/* Link para mesas se não tiver nenhuma */}
       {typedPlates.length === 0 && (

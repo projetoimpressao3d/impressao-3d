@@ -109,3 +109,65 @@ export interface CreateModelRequest {
   format: Model["format"];
   original_filename: string;
 }
+
+// ---------------------------------------------------------------------------
+// Contratos de API — Split Sessions (Fase 5)
+// ---------------------------------------------------------------------------
+
+/** Estado de um plano de corte no frontend (posição + quaternion em R3F/Three.js). */
+export interface CutPlaneData {
+  id: string;
+  /** Posição do centro do plano no espaço do modelo (centrado na origem). */
+  px: number;
+  py: number;
+  pz: number;
+  /** Quaternion representando a orientação do plano. PlaneGeometry padrão: normal = [0,0,1]. */
+  qx: number;
+  qy: number;
+  qz: number;
+  qw: number;
+  label: string;
+}
+
+/** Status de fit de uma peça resultante do corte. */
+export interface PieceBboxStatus {
+  pieceIndex: number;
+  /** Dimensões em mm (da bounding box, após corte — aproximadas por filtragem de vértices). */
+  bbox: { x: number; y: number; z: number } | null;
+  fits: boolean;
+}
+
+/** Resposta do POST /split-sessions (planejamento). */
+export interface PlanSessionResponse {
+  split_session_id: string;
+  fits: boolean;
+  model_dimensions: { x: number; y: number; z: number };
+  plate_dimensions: { x: number; y: number; z: number };
+  cuts_needed: { x: number; y: number; z: number };
+  cut_planes: Array<{
+    axis: string;
+    position_mm: number;
+    normal: number[];
+    label: string;
+  }>;
+}
+
+/** Resposta do POST /split-sessions/{id}/execute. */
+export interface ExecuteResponse {
+  split_session_id: string;
+  status: string;
+  piece_count: number;
+  pieces: ExecutedPiece[];
+}
+
+/** Peça resultante do corte booleano, com URL assinada para download. */
+export interface ExecutedPiece {
+  id: string;
+  piece_index: number;
+  storage_path: string;
+  bounding_box_x_mm: number | null;
+  bounding_box_y_mm: number | null;
+  bounding_box_z_mm: number | null;
+  fits_build_plate: boolean;
+  download_url: string | null;
+}
