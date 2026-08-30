@@ -67,7 +67,10 @@ def upload_bytes(
     supabase.storage.from_("models").upload(
         path=storage_path,
         file=data,  # bytes puro — BytesIO NÃO é suportado no supabase-py v2
-        file_options={"content-type": content_type, "upsert": True},
+        file_options={
+            "content-type": content_type,
+            "upsert": "true",  # header HTTP deve ser string, não bool
+        },
     )
     logger.info("Upload concluído: %s (%d bytes)", storage_path, len(data))
 
