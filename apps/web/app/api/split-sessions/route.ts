@@ -24,15 +24,27 @@ export async function POST(request: NextRequest) {
     process.env.PYTHON_BACKEND_URL ?? "http://localhost:8000";
   const token = process.env.PYTHON_BACKEND_INTERNAL_TOKEN ?? "";
 
-  const upstream = await fetch(`${meshUrl}/split-sessions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ ...body, user_id: user.id }),
-  });
+  try {
+    const upstream = await fetch(`${meshUrl}/split-sessions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ ...body, user_id: user.id }),
+    });
 
-  const data: unknown = await upstream.json();
-  return NextResponse.json(data, { status: upstream.status });
+    const data: unknown = await upstream.json();
+    return NextResponse.json(data, { status: upstream.status });
+  } catch (err) {
+    // Mesh-service não está rodando ou não acessível
+    const msg =
+      err instanceof Error && err.message.includes("ECONNREFUSED")
+        ? "O serviço de análise não está rodando. Inicie o mesh-service e tente novamente."
+        : `Erro ao conectar ao serviço de análise: ${String(err)}`;
+    return NextResponse.json(
+      { detail: msg },
+      { status: 503 },
+    );
+  }
 }

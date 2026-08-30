@@ -28,38 +28,46 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     process.env.PYTHON_BACKEND_URL ?? "http://localhost:8000";
   const token = process.env.PYTHON_BACKEND_INTERNAL_TOKEN ?? "";
 
-  const upstream = await fetch(
-    `${meshUrl}/split-sessions/${sessionId}/execute`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
+  try {
+    const upstream = await fetch(
+      `${meshUrl}/split-sessions/${sessionId}/execute`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ ...body, user_id: user.id }),
       },
-      body: JSON.stringify({ ...body, user_id: user.id }),
-    },
-  );
+    );
 
-  if (!upstream.ok) {
-    const errData: unknown = await upstream.json();
-    return NextResponse.json(errData, { status: upstream.status });
+    if (!upstream.ok) {
+      const errData: unknown = await upstream.json();
+      return NextResponse.json(errData, { status: upstream.status });
+    }
+
+    const data = (await upstream.json()) as ExecuteResponse;
+
+    // Gerar URLs assinadas (1 hora) para download de cada peça
+    const admin = createAdminClient();
+    const piecesWithUrls: ExecutedPiece[] = await Promise.all(
+      data.pieces.map(async (piece) => {
+        const { data: urlData } = await admin.storage
+          .from("models")
+          .createSignedUrl(piece.storage_path, 3600);
+        return { ...piece, download_url: urlData?.signedUrl ?? null };
+      }),
+    );
+
+    return NextResponse.json(
+      { ...data, pieces: piecesWithUrls },
+      { status: 200 },
+    );
+  } catch (err) {
+    const msg =
+      err instanceof Error && err.message.includes("ECONNREFUSED")
+        ? "O serviço de análise não está rodando. Inicie o mesh-service e tente novamente."
+        : `Erro ao conectar ao serviço de análise: ${String(err)}`;
+    return NextResponse.json({ detail: msg }, { status: 503 });
   }
-
-  const data = (await upstream.json()) as ExecuteResponse;
-
-  // Gerar URLs assinadas (1 hora) para download de cada peça
-  const admin = createAdminClient();
-  const piecesWithUrls: ExecutedPiece[] = await Promise.all(
-    data.pieces.map(async (piece) => {
-      const { data: urlData } = await admin.storage
-        .from("models")
-        .createSignedUrl(piece.storage_path, 3600);
-      return { ...piece, download_url: urlData?.signedUrl ?? null };
-    }),
-  );
-
-  return NextResponse.json(
-    { ...data, pieces: piecesWithUrls },
-    { status: 200 },
-  );
 }
