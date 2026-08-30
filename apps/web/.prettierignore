@@ -1,0 +1,14 @@
+# Pastas geradas automaticamente
+.next
+node_modules
+out
+dist
+build
+
+# Supabase migrations são SQL puro — sem formatação Prettier
+supabase/migrations
+
+# Arquivos de lock
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
