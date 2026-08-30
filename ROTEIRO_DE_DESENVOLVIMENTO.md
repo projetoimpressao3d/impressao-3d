@@ -96,9 +96,9 @@ implemente nenhuma lista de modelos comerciais de impressora pré-cadastrada.
 ```
 
 **Checklist de saída da fase:**
-- [ ] STL e 3MF renderizam corretamente no navegador
-- [ ] Usuário consegue cadastrar/editar/excluir mesas de trabalho com dimensões próprias
-- [ ] Comparação visual entre modelo e mesa de trabalho aparece na tela
+- [X] STL e 3MF renderizam corretamente no navegador
+- [X] Usuário consegue cadastrar/editar/excluir mesas de trabalho com dimensões próprias
+- [X] Comparação visual entre modelo e mesa de trabalho aparece na tela
 
 ---
 
