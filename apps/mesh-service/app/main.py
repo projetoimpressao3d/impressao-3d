@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import health
+from app.routers import health, analyze
 
 app = FastAPI(
     title="Mesh Service",
@@ -28,3 +28,5 @@ app.add_middleware(
 # Routers
 # ---------------------------------------------------------------------------
 app.include_router(health.router)
+app.include_router(analyze.router)
+

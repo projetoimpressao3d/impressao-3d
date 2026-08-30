@@ -48,10 +48,10 @@ Não implemente nenhuma funcionalidade de produto ainda — só a fundação.
 ```
 
 **Checklist de saída da fase:**
-- [ ] `npm run dev` sobe o frontend localmente
-- [ ] `uvicorn` sobe o backend Python localmente com `/health` respondendo
-- [ ] Migração SQL aplicada no projeto Supabase (rodar via Supabase CLI ou dashboard)
-- [ ] Repositório no GitHub, primeiro push feito
+- [X] `npm run dev` sobe o frontend localmente
+- [X] `uvicorn` sobe o backend Python localmente com `/health` respondendo
+- [X] Migração SQL aplicada no projeto Supabase (rodar via Supabase CLI ou dashboard)
+- [X] Repositório no GitHub, primeiro push feito
 - [ ] Projeto conectado na Vercel (deploy automático do `/apps/web`)
 
 ---
