@@ -264,14 +264,14 @@ def _create_split_session(
                     "has_connectors": False,
                 }
             )
-            .select()
-            .single()
-            .execute()
+            .execute()  # supabase-py v2: .single() não suportado em inserts
         )
-        return result.data  # type: ignore[return-value]
+        # .execute() após .insert() retorna uma lista — pegamos o primeiro item
+        return result.data[0] if result.data else None  # type: ignore[return-value]
     except Exception as exc:  # noqa: BLE001
         logger.error("_create_split_session falhou: %s", exc)
         return None
+
 
 
 # =============================================================================
@@ -439,6 +439,7 @@ async def execute_split(
             upload_bytes(supabase, storage_path, stl_bytes)
 
             # Inserir linha na tabela `pieces`
+            # supabase-py v2: .single() não é suportado em .insert() — usar data[0]
             insert_result = (
                 supabase.table("pieces")
                 .insert(
@@ -452,12 +453,11 @@ async def execute_split(
                         "fits_build_plate": fits,
                     }
                 )
-                .select()
-                .single()
                 .execute()
             )
             if insert_result.data:
-                piece_rows.append(insert_result.data)
+                piece_rows.append(insert_result.data[0])
+
 
         # 10. Atualizar split_session: status='completed', cut_planes confirmados
         now_iso = datetime.now(timezone.utc).isoformat()
