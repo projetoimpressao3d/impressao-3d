@@ -74,9 +74,9 @@ Siga as convenções de código da seção 7 do AGENTS.md.
 ```
 
 **Checklist de saída da fase:**
-- [ ] Cadastro/login funcionando de ponta a ponta
-- [ ] Upload salva o arquivo no Storage e cria a linha em `models`
-- [ ] Bounding box e status de printability aparecem na tela após o upload
+- [X] Cadastro/login funcionando de ponta a ponta
+- [X] Upload salva o arquivo no Storage e cria a linha em `models`
+- [X] Bounding box e status de printability aparecem na tela após o upload
 - [ ] RLS testado (um usuário não consegue ver modelo de outro usuário)
 
 ---

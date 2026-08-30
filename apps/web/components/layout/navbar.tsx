@@ -26,6 +26,12 @@ export async function Navbar() {
             Meus modelos
           </Link>
           <Link
+            href="/build-plates"
+            className="text-sm text-gray-600 hover:text-gray-900"
+          >
+            Mesas
+          </Link>
+          <Link
             href="/models/upload"
             className="rounded-md bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700"
           >

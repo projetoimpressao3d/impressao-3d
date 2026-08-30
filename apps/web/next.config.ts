@@ -1,10 +1,12 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Strict mode for React — detecta efeitos colaterais inesperados
   reactStrictMode: true,
 
-  // Permite importar SVGs e outros assets estáticos
+  // Three.js e seus wrappers React precisam ser transpilados pelo Next.js
+  // para funcionar corretamente com o App Router (ESM + SSR desabilitado)
+  transpilePackages: ["three", "@react-three/fiber", "@react-three/drei"],
+
   images: {
     formats: ["image/avif", "image/webp"],
   },

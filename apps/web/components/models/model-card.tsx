@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { Model } from "@/types/database";
 
 const STATUS_CONFIG: Record<
@@ -66,12 +67,18 @@ export function ModelCard({ model }: { model: Model }) {
         </p>
       </div>
 
-      <div className="ml-4 shrink-0">
+      <div className="ml-4 flex shrink-0 flex-col items-end gap-2">
         <span
           className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${status.className}`}
         >
           {status.label}
         </span>
+        <Link
+          href={`/models/${model.id}`}
+          className="text-xs font-medium text-brand-600 hover:underline"
+        >
+          Visualizar →
+        </Link>
       </div>
     </div>
   );
