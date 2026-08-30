@@ -4,7 +4,6 @@ Utilitários de I/O com Supabase Storage para o mesh-service.
 Funções compartilhadas entre os routers de análise e execução de corte.
 """
 
-import io
 import logging
 import tempfile
 from pathlib import Path
@@ -62,11 +61,13 @@ def upload_bytes(
     """
     Faz upload de bytes para o bucket 'models' no Supabase Storage.
 
+    supabase-py v2: storage.upload() aceita bytes diretamente, mas NÃO BytesIO.
     Usa upsert=True para sobrescrever se já existir (re-execução de sessão).
     """
     supabase.storage.from_("models").upload(
         path=storage_path,
-        file=io.BytesIO(data),
+        file=data,  # bytes puro — BytesIO NÃO é suportado no supabase-py v2
         file_options={"content-type": content_type, "upsert": True},
     )
     logger.info("Upload concluído: %s (%d bytes)", storage_path, len(data))
+
