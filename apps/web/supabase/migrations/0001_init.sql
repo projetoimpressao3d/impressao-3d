@@ -112,20 +112,6 @@ create table public.subscriptions (
 comment on table public.subscriptions is
   'Assinatura Stripe do usuário. Atualizada via webhook do Stripe.';
 
--- Contador de uso mensal (para limitar o plano grátis)
-create table public.usage_counters (
-  id                    uuid  primary key default gen_random_uuid(),
-  user_id               uuid  not null references auth.users(id) on delete cascade,
-  month                 date  not null, -- primeiro dia do mês, ex: 2026-08-01
-  ai_generations_used   int   not null default 0 check (ai_generations_used >= 0),
-  splits_used           int   not null default 0 check (splits_used >= 0),
-  connectors_used       int   not null default 0 check (connectors_used >= 0),
-  unique (user_id, month)
-);
-
-comment on table public.usage_counters is
-  'Contador mensal de uso por usuário. month = primeiro dia do mês (ex: 2026-08-01).';
-
 -- ---------------------------------------------------------------------------
 -- ÍNDICES
 -- ---------------------------------------------------------------------------
@@ -136,7 +122,6 @@ create index idx_split_sessions_user_id  on public.split_sessions(user_id);
 create index idx_split_sessions_model_id on public.split_sessions(model_id);
 create index idx_pieces_split_session_id on public.pieces(split_session_id);
 create index idx_subscriptions_user_id   on public.subscriptions(user_id);
-create index idx_usage_counters_user_id  on public.usage_counters(user_id);
 
 -- ---------------------------------------------------------------------------
 -- TRIGGER: criar profiles automaticamente ao criar conta
@@ -268,12 +253,3 @@ alter table public.subscriptions enable row level security;
 create policy "subscriptions: select próprio"
   on public.subscriptions for select
   using (auth.uid() = user_id);
-
--- usage_counters
-alter table public.usage_counters enable row level security;
-
-create policy "usage_counters: select próprio"
-  on public.usage_counters for select
-  using (auth.uid() = user_id);
-
--- Incremento de contadores é feito pelo backend (service_role) — sem política de INSERT/UPDATE para usuário.

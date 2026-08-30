@@ -87,15 +87,6 @@ export interface Subscription {
   current_period_end: string | null;
 }
 
-export interface UsageCounter {
-  id: string;
-  user_id: string;
-  month: string;
-  ai_generations_used: number;
-  splits_used: number;
-  connectors_used: number;
-}
-
 // ---------------------------------------------------------------------------
 // Contratos de API entre Next.js e mesh-service
 // ---------------------------------------------------------------------------

@@ -156,16 +156,6 @@ create table subscriptions (
   current_period_end timestamptz
 );
 
--- Contador de uso mensal (para limitar o plano grátis)
-create table usage_counters (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id),
-  month date not null, -- primeiro dia do mês, ex: 2026-08-01
-  ai_generations_used int not null default 0,
-  splits_used int not null default 0,
-  connectors_used int not null default 0,
-  unique (user_id, month)
-);
 ```
 
 ## 6. Especificação das funcionalidades
@@ -215,13 +205,10 @@ impressora"). Não implementar nenhuma lista de modelos comerciais de impressora
 6. Usuário baixa as peças (arquivo por peça, ou um único 3MF com múltiplos objetos) junto com
    um guia de montagem simples (ordem das peças, ilustração básica).
 
-**Regra de negócio — plano grátis vs pago:**
-- Plano grátis: cortes planos simples, sem geometria de encaixe. Limite de N divisões/mês
-  (usar `usage_counters.splits_used`, valor exato de N a definir com o usuário).
-- Plano pago: além dos cortes, gerar encaixes automáticos (pino + furo) nas faces de corte.
-  Tolerância entre pino e furo configurável por material (ex: PLA ≈ 0,2mm de folga por lado;
-  manter essa tabela de tolerâncias em um arquivo de configuração, não hardcoded no meio da
-  lógica de corte). Incrementar `usage_counters.connectors_used`.
+**Regra de negócio — acesso via assinatura:**
+- Sem assinatura ativa: usuário pode fazer upload, visualizar o modelo, cadastrar mesas de trabalho e ver a checagem automática de encaixe (passos 1-4) — ou seja, a simulação visual do corte é livre para todos.
+- Com assinatura ativa (subscriptions.status = 'active'): usuário pode executar o corte de fato (passo 5), baixar as peças (passo 6) e gerar encaixes automáticos (pino + furo) nas faces de corte. Não há limite de quantidade de divisões por mês nem contador de uso — o controle de acesso é binário (assinante ativo ou não), não por quantidade consumida.
+- Tolerância entre pino e furo dos encaixes é configurável por material (ex: PLA ≈ 0,2mm de folga por lado; manter essa tabela de tolerâncias em um arquivo de configuração, não hardcoded no meio da lógica de corte).
 
 **Não implementar nesta fase:** segmentação automática por IA/visão computacional
 ("cortes inteligentes" que decidem sozinhos onde cortar seguindo contornos do objeto). O
@@ -243,8 +230,7 @@ deixar o modelo "inventar" temperatura/velocidade sem grounding). Custo por cham
 monitorado; usar o modelo mais econômico disponível para essa tarefa.
 
 ### 6.7 Monetização
-Stripe Checkout + webhook para atualizar `subscriptions` e `profiles.plan`. Ao mudar de plano,
-os limites em `usage_counters` devem refletir o novo plano no próximo ciclo mensal.
+Stripe Checkout + webhook para atualizar `subscriptions` e `profiles.plan`. O acesso às funcionalidades que exigem assinatura (execução do corte, encaixes automáticos, geração via IA) é liberado enquanto subscriptions.status = 'active' — não há contadores de uso mensal a sincronizar; a verificação é sempre pelo status atual da assinatura.
 
 ## 7. Convenções de código
 
@@ -293,9 +279,7 @@ NEXT_PUBLIC_APP_URL=
   não apenas as linhas do banco.
 - Não logar conteúdo de arquivos de usuário em logs de aplicação (nomes de arquivo e IDs, sim;
   conteúdo do modelo 3D, não).
-- Termos de uso devem deixar claro quem é dono dos arquivos enviados e dos modelos gerados por
-  IA (a licença da Meshy no plano grátis deles é CC BY 4.0 — isso se propaga para o que
-  oferecemos no nosso próprio plano grátis, se usarmos a Meshy nesse tier).
+- Termos de uso devem deixar claro quem é dono dos arquivos enviados e dos modelos gerados por IA — como a geração via IA (seção 6.5) agora exige assinatura ativa, verificar qual plano da Meshy a nossa conta usa (grátis ou pago) e quais direitos de licença isso propaga para os nossos assinantes antes de liberar a funcionalidade (o plano grátis da Meshy usa licença CC BY 4.0, que exige atribuição).
 
 ## 10. Definição de pronto (Definition of Done) por funcionalidade
 

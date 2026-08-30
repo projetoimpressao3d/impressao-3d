@@ -140,7 +140,8 @@ Leia as seções 6.5 e 6.6 do AGENTS.md. Implemente:
 2. Endpoint que chama a API da Claude para sugerir configuração de impressão (material +
    mesa de trabalho → temperatura, velocidade, suporte), usando uma tabela de valores de
    referência no banco como grounding — não deixe o modelo inventar números sem essa base.
-3. Registre o uso em `usage_counters` para permitir limitar isso no plano grátis depois.
+3. Restrinja o uso desses dois endpoints a usuários com assinatura ativa
+   (`subscriptions.status = 'active'`) — não use contador de uso, apenas essa verificação.
 ```
 
 **Checklist de saída da fase:**
@@ -173,8 +174,10 @@ Backend (/apps/mesh-service):
    (um plano por vez), capping de cada face aberta, validação de manifold + validação de que
    cabe no volume informado, e salvamento de cada peça como STL/3MF no Storage com a
    respectiva linha em `pieces`.
-6. Implemente o limite do plano grátis usando usage_counters.splits_used (a definir o valor
-   exato de N comigo antes de travar o número no código).
+6. Verifique se o usuário tem assinatura ativa (`subscriptions.status = 'active'`) antes de
+   permitir a execução do corte (este passo 5). Sem assinatura, o usuário pode montar e ajustar
+   os planos de corte normalmente (simulação visual), mas não executar o corte nem baixar as
+   peças.
 
 Não implemente ainda a geração de encaixes (isso é a fase 7). Gere só cortes planos limpos
 por enquanto.
@@ -195,12 +198,14 @@ por enquanto.
 **Prompt sugerido:**
 ```
 Leia a seção 6.4 (regra de negócio) e 6.7 do AGENTS.md. Implemente:
-1. Geração automática de encaixes (pino + furo) nas faces de corte, como recurso do plano
-   pago, seguindo a tabela de tolerâncias por material descrita no AGENTS.md (crie essa
-   tabela em um arquivo de configuração separado, não hardcoded na lógica de corte).
+1. Geração automática de encaixes (pino + furo) nas faces de corte, seguindo a tabela de
+   tolerâncias por material descrita no AGENTS.md (crie essa tabela em um arquivo de
+   configuração separado, não hardcoded na lógica de corte). Encaixes fazem parte da mesma
+   assinatura que libera a execução do corte — não é um nível de cobrança separado.
 2. Integração com Stripe Checkout + webhook, atualizando `subscriptions` e `profiles.plan`.
-3. Bloqueio de funcionalidades pagas (encaixes, limite maior de divisões/mês, geração via IA
-   sem limite) para usuários no plano grátis.
+3. Bloqueio das funcionalidades que exigem assinatura (execução do corte, encaixes, geração via
+   IA) para usuários sem assinatura ativa — verificação sempre por `subscriptions.status`, sem
+   limites de quantidade de uso.
 4. Antes de finalizar esta fase, me avise para migrarmos Vercel e Supabase para os planos
    pagos, já que a partir daqui o uso passa a ser comercial (seção 3 do AGENTS.md).
 ```
