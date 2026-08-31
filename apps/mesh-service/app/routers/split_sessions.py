@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
@@ -392,11 +394,22 @@ async def execute_split(
         # 6. Carregar, normalizar e reparar a malha
         mesh = load_and_normalize(tmp_path)
         mesh = repair_mesh(mesh)
+
+        # CRÍTICO: centrar a malha na origem do bounding box.
+        # O Three.js faz geo.center() / group.position.sub(bboxCenter) antes de exibir
+        # o modelo, então TODOS os planos de corte enviados pelo frontend são definidos
+        # em coordenadas relativas ao modelo JÁ CENTRADO.
+        # Sem este passo, os planos passam longe do modelo e o corte não ocorre.
+        bbox_center = mesh.bounds.mean(axis=0)  # (min + max) / 2 por eixo
+        mesh.apply_translation(-bbox_center)
         logger.info(
-            "Malha carregada: verts=%d faces=%d watertight=%s",
+            "Malha carregada e centrada: verts=%d faces=%d watertight=%s extents=[%.1f, %.1f, %.1f]mm "
+            "(centro original era [%.2f, %.2f, %.2f])",
             len(mesh.vertices),
             len(mesh.faces),
             mesh.is_watertight,
+            *mesh.extents,
+            *bbox_center,
         )
 
         # 7. Preparar planos de corte com os valores confirmados pelo usuário
