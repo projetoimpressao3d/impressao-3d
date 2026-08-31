@@ -8,7 +8,7 @@ Cobertura:
 
 import math
 import uuid
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -188,6 +188,8 @@ def _model_row(
     return {
         "id": str(uuid.uuid4()),
         "user_id": user_id or str(uuid.uuid4()),
+        "storage_path": "test/model.stl",
+        "format": "stl",
         "bounding_box_x_mm": bbox[0],
         "bounding_box_y_mm": bbox[1],
         "bounding_box_z_mm": bbox[2],
@@ -241,15 +243,25 @@ class TestSplitSessionEndpoint:
         assert response.status_code == 401
 
     def test_model_fits(self) -> None:
-        """CENÁRIO 1 (endpoint): 100×80×50mm numa mesa 256×256×256mm → fits=True."""
+        """CENÁRIO 1 (endpoint): modelo pequeno (100×80×50) → fits=True, sem planos."""
+        import trimesh
+        from app.mesh.natural_cuts import SuggestedSplitPlan
+
+        mock_mesh = trimesh.creation.box([100, 80, 50])
+
         with (
             patch("app.routers.split_sessions._fetch_model") as mock_model,
             patch("app.routers.split_sessions._fetch_build_plate") as mock_plate,
             patch("app.routers.split_sessions._create_split_session") as mock_session,
+            patch("app.routers.split_sessions.create_download_url", return_value="http://fake"),
+            patch("app.routers.split_sessions.download_to_tempfile", new_callable=AsyncMock, return_value="/tmp/fake.stl"),
+            patch("app.routers.split_sessions.load_and_normalize", return_value=mock_mesh),
+            patch("app.routers.split_sessions.suggest_cuts") as mock_suggest,
         ):
             mock_model.return_value = _model_row(bbox=(100.0, 80.0, 50.0))
             mock_plate.return_value = _plate_row(dims=(256.0, 256.0, 256.0))
             mock_session.return_value = _session_row()
+            mock_suggest.return_value = SuggestedSplitPlan(fits=True, cut_planes=[])
 
             response = client.post(
                 "/split-sessions",
@@ -260,20 +272,37 @@ class TestSplitSessionEndpoint:
         assert response.status_code == 201
         data = response.json()
         assert data["fits"] is True
-        assert data["cuts_needed"] == {"x": 0, "y": 0, "z": 0}
         assert data["cut_planes"] == []
         assert "split_session_id" in data
 
     def test_one_cut_one_axis(self) -> None:
-        """CENÁRIO 2 (endpoint): 400×80×50mm → 1 corte em X no centro."""
+        """CENÁRIO 2 (endpoint): 400×80×50mm → 1 corte sugerido em X."""
+        import trimesh
+        from app.mesh.natural_cuts import SuggestedCutPlane, SuggestedSplitPlan
+
+        mock_mesh = trimesh.creation.box([400, 80, 50])
+        mock_plane = SuggestedCutPlane(
+            normal=[1.0, 0.0, 0.0],
+            origin=[0.0, 0.0, 0.0],
+            label="Divisao X-1 (grade)",
+            source="suggested_grid_fallback",
+        )
+
         with (
             patch("app.routers.split_sessions._fetch_model") as mock_model,
             patch("app.routers.split_sessions._fetch_build_plate") as mock_plate,
             patch("app.routers.split_sessions._create_split_session") as mock_session,
+            patch("app.routers.split_sessions.create_download_url", return_value="http://fake"),
+            patch("app.routers.split_sessions.download_to_tempfile", new_callable=AsyncMock, return_value="/tmp/fake.stl"),
+            patch("app.routers.split_sessions.load_and_normalize", return_value=mock_mesh),
+            patch("app.routers.split_sessions.suggest_cuts") as mock_suggest,
         ):
             mock_model.return_value = _model_row(bbox=(400.0, 80.0, 50.0))
             mock_plate.return_value = _plate_row(dims=(256.0, 256.0, 256.0))
             mock_session.return_value = _session_row()
+            mock_suggest.return_value = SuggestedSplitPlan(
+                fits=False, cut_planes=[mock_plane]
+            )
 
             response = client.post(
                 "/split-sessions",
@@ -284,23 +313,53 @@ class TestSplitSessionEndpoint:
         assert response.status_code == 201
         data = response.json()
         assert data["fits"] is False
-        assert data["cuts_needed"]["x"] == 1
-        assert data["cuts_needed"]["y"] == 0
-        assert data["cuts_needed"]["z"] == 0
         assert len(data["cut_planes"]) == 1
-        assert data["cut_planes"][0]["axis"] == "x"
-        assert abs(data["cut_planes"][0]["position_mm"]) < 0.1  # ≈ centro
+        plane = data["cut_planes"][0]
+        assert plane["normal"] == [1.0, 0.0, 0.0]
+        assert plane["source"] in ("suggested_natural", "suggested_grid_fallback")
+        assert "origin" in plane
+        assert "label" in plane
 
     def test_multi_axis_multi_cuts(self) -> None:
-        """CENÁRIO 3 (endpoint): 700×350×50mm → 2 cortes X + 1 corte Y = 3 planos."""
+        """CENÁRIO 3 (endpoint): 700×350×50mm → 3 planos sugeridos (2X + 1Y)."""
+        import trimesh
+        from app.mesh.natural_cuts import SuggestedCutPlane, SuggestedSplitPlan
+
+        mock_mesh = trimesh.creation.box([700, 350, 50])
+        planes = [
+            SuggestedCutPlane(
+                normal=[1.0, 0.0, 0.0],
+                origin=[-116.7, 0.0, 0.0],
+                label="Divisao X-1 (grade)",
+                source="suggested_grid_fallback",
+            ),
+            SuggestedCutPlane(
+                normal=[1.0, 0.0, 0.0],
+                origin=[116.7, 0.0, 0.0],
+                label="Divisao X-2 (grade)",
+                source="suggested_grid_fallback",
+            ),
+            SuggestedCutPlane(
+                normal=[0.0, 1.0, 0.0],
+                origin=[0.0, 0.0, 0.0],
+                label="Divisao Y-1 (grade)",
+                source="suggested_grid_fallback",
+            ),
+        ]
+
         with (
             patch("app.routers.split_sessions._fetch_model") as mock_model,
             patch("app.routers.split_sessions._fetch_build_plate") as mock_plate,
             patch("app.routers.split_sessions._create_split_session") as mock_session,
+            patch("app.routers.split_sessions.create_download_url", return_value="http://fake"),
+            patch("app.routers.split_sessions.download_to_tempfile", new_callable=AsyncMock, return_value="/tmp/fake.stl"),
+            patch("app.routers.split_sessions.load_and_normalize", return_value=mock_mesh),
+            patch("app.routers.split_sessions.suggest_cuts") as mock_suggest,
         ):
             mock_model.return_value = _model_row(bbox=(700.0, 350.0, 50.0))
             mock_plate.return_value = _plate_row(dims=(256.0, 256.0, 256.0))
             mock_session.return_value = _session_row()
+            mock_suggest.return_value = SuggestedSplitPlan(fits=False, cut_planes=planes)
 
             response = client.post(
                 "/split-sessions",
@@ -311,18 +370,15 @@ class TestSplitSessionEndpoint:
         assert response.status_code == 201
         data = response.json()
         assert data["fits"] is False
-        assert data["cuts_needed"]["x"] == 2
-        assert data["cuts_needed"]["y"] == 1
-        assert data["cuts_needed"]["z"] == 0
         assert len(data["cut_planes"]) == 3
 
-        x_planes = [p for p in data["cut_planes"] if p["axis"] == "x"]
-        y_planes = [p for p in data["cut_planes"] if p["axis"] == "y"]
+        x_planes = [p for p in data["cut_planes"] if p["normal"] == [1.0, 0.0, 0.0]]
+        y_planes = [p for p in data["cut_planes"] if p["normal"] == [0.0, 1.0, 0.0]]
         assert len(x_planes) == 2
         assert len(y_planes) == 1
-        # Normals corretos
         assert x_planes[0]["normal"] == [1.0, 0.0, 0.0]
         assert y_planes[0]["normal"] == [0.0, 1.0, 0.0]
+
 
     def test_model_not_found_returns_404(self) -> None:
         """Modelo inexistente ou de outro usuário → 404."""
@@ -371,3 +427,4 @@ class TestSplitSessionEndpoint:
             )
 
         assert response.status_code == 404
+

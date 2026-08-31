@@ -127,6 +127,13 @@ export interface CutPlaneData {
   qz: number;
   qw: number;
   label: string;
+  /**
+   * Origem do plano:
+   * - "suggested_natural": detectado como gargalo anatômico por trimesh.section
+   * - "suggested_grid_fallback": gerado por divisão em grade (sem gargalo natural)
+   * - "manual": adicionado pelo usuário via "+ Adicionar plano"
+   */
+  source: "suggested_natural" | "suggested_grid_fallback" | "manual";
 }
 
 /** Status de fit de uma peça resultante do corte. */
@@ -143,14 +150,14 @@ export interface PlanSessionResponse {
   fits: boolean;
   model_dimensions: { x: number; y: number; z: number };
   plate_dimensions: { x: number; y: number; z: number };
-  cuts_needed: { x: number; y: number; z: number };
   cut_planes: Array<{
-    axis: string;
-    position_mm: number;
     normal: number[];
+    origin: number[];
     label: string;
+    source: "suggested_natural" | "suggested_grid_fallback";
   }>;
 }
+
 
 /** Resposta do POST /split-sessions/{id}/execute. */
 export interface ExecuteResponse {

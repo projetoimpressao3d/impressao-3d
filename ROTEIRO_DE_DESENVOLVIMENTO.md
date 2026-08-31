@@ -123,9 +123,9 @@ Ainda não implemente o corte em si (isso é a fase 6) — só o cálculo e a su
 ```
 
 **Checklist de saída da fase:**
-- [ ] Endpoint retorna corretamente se o modelo cabe ou não
-- [ ] Sugestão de número de cortes por eixo está correta em testes automatizados
-- [ ] Passo de reparo de malha funciona em arquivos STL reais "sujos" (com furos/erros)
+- [X] Endpoint retorna corretamente se o modelo cabe ou não
+- [X] Sugestão de número de cortes por eixo está correta em testes automatizados
+- [X] Passo de reparo de malha funciona em arquivos STL reais "sujos" (com furos/erros)
 
 ---
 
@@ -158,6 +158,7 @@ Leia as seções 6.5 e 6.6 do AGENTS.md. Implemente:
 Leia a seção 6.4 do AGENTS.md do início ao fim antes de começar — esta é a funcionalidade
 mais importante do produto. Implemente:
 
+PARTE 1 - CORTE MANUAL (BASE):
 Frontend (/apps/web):
 1. No visualizador 3D, permita ao usuário adicionar um ou mais planos de corte sobre o modelo,
    usando TransformControls do drei para posicionar/rotacionar cada plano.
@@ -178,18 +179,41 @@ Backend (/apps/mesh-service):
    permitir a execução do corte (este passo 5). Sem assinatura, o usuário pode montar e ajustar
    os planos de corte normalmente (simulação visual), mas não executar o corte nem baixar as
    peças.
+   
+PARTE 2 — Sugestão automática de corte:
+Backend (/apps/mesh-service):
+7. Implemente a detecção de pontos naturais de corte com trimesh.section: fatiar o modelo em
+   várias direções (eixos principais da bounding box + direções adicionais distribuídas ao
+   redor do modelo), calcular a área da seção transversal em cada posição e identificar os
+   mínimos locais (gargalos). Escreva testes com pelo menos um modelo articulado (ex: uma
+   figura humanoide ou animal) para validar que os gargalos batem com as junções esperadas.
+8. Implemente a busca gulosa que seleciona, entre os candidatos, o menor conjunto de cortes que
+   faz cada peça caber na mesa de trabalho, priorizando os candidatos de menor área. Se uma
+   peça não couber mesmo após esgotar os candidatos naturais, aplique o fallback em grade
+   (`ceil(dimensão_peça / dimensão_mesa)`) só nessa peça.
+9. Endpoint que retorna a lista de cortes sugeridos (com a tag `source` de cada um:
+   "suggested_natural" ou "suggested_grid_fallback") para um model_id + build_plate_id.
 
-Não implemente ainda a geração de encaixes (isso é a fase 7). Gere só cortes planos limpos
-por enquanto.
+Frontend (/apps/web):
+10. Ao entrar na tela de corte de um modelo que não cabe na mesa, pré-popule os planos de corte
+    já com as sugestões vindas do endpoint da tarefa 9 (reaproveitando a mesma interface da
+    Parte 1 — TransformControls + clipping preview). O usuário pode aprovar cada sugestão como
+    está, ajustar arrastando, remover, ou adicionar cortes manuais.
+
+Não implemente ainda a geração de encaixes (isso é a fase 7) nem nomeação de peças via IA
+(fora de escopo por decisão do usuário — rótulos ficam genéricos: "Peça 1", "Peça 2"...).
 ```
 
 **Checklist de saída da fase:**
-- [ ] Usuário consegue posicionar e ajustar planos de corte interativamente
-- [ ] Preview em tempo real mostra corretamente se cada pedaço cabe ou não
+- [X] Usuário consegue posicionar e ajustar planos de corte interativamente
+- [X] Preview em tempo real mostra corretamente se cada pedaço cabe ou não
 - [ ] Corte real gera peças watertight e manifold (testar com pelo menos 3 modelos STL reais
-      de complexidades diferentes)
-- [ ] Download das peças funciona (arquivo por peça e/ou 3MF único com múltiplos objetos)
-- [ ] Limite do plano grátis é respeitado
+      de complexidades diferentes, incluindo pelo menos um modelo articulado/humanoide)
+- [ ] Detecção de gargalos identifica corretamente pontos como pescoço, pulsos ou base de membros num modelo de teste articulado
+- [ ] Sugestões automáticas pré-populam a tela de corte e o usuário consegue aprovar, ajustar, remover ou adicionar cortes livremente
+- [ ] Fallback em grade entra corretamente quando uma peça não tem gargalo natural suficiente
+- [X] Download das peças funciona (arquivo por peça e/ou 3MF único com múltiplos objetos)
+- [ ] Execução do corte é bloqueada para usuários sem assinatura ativa, mas a simulação visual (manual e sugestões) continua liberada para todos
 
 ---
 
@@ -214,7 +238,7 @@ Leia a seção 6.4 (regra de negócio) e 6.7 do AGENTS.md. Implemente:
 - [ ] Encaixes gerados se alinham corretamente entre as peças (testar imprimindo ao menos uma
       vez, se possível)
 - [ ] Fluxo de pagamento completo (checkout → webhook → liberação do plano) funciona
-- [ ] Limites por plano aplicados corretamente em todos os endpoints relevantes
+- [ ] Verificação de assinatura ativa aplicada corretamente em todos os endpoints relevantes (execução do corte, encaixes, geração via IA)
 - [ ] Migração Vercel/Supabase para planos pagos feita antes de abrir para usuários reais
 - [ ] Grupo beta convidado
 
@@ -225,5 +249,5 @@ Leia a seção 6.4 (regra de negócio) e 6.7 do AGENTS.md. Implemente:
 - Monitorar custo real de API (Meshy + Claude) vs. estimativa do planejamento estratégico.
 - Coletar feedback do grupo beta especificamente sobre o divisor de peças (fluxo mais
   importante do produto) antes de investir em novas funcionalidades.
-- Reavaliar se vale a pena implementar cortes "inteligentes" (seguindo contornos naturais do
-  objeto) como evolução do plano pago, com base no uso real do corte manual assistido.
+- Reavaliar se vale a pena investir em extração de esqueleto (curve-skeleton) para melhorar a detecção de gargalos em membros muito dobrados/curvados, com base no uso real da sugestão automática de corte (ver nota em "Não implementar nesta fase" na seção 6.4 do AGENTS.md).
+- Reavaliar a nomeação automática de peças via IA (ex: "braço direito") no guia de montagem, hoje fora de escopo por decisão do usuário.

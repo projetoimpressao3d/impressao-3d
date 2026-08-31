@@ -247,11 +247,16 @@ export function SplitPanel({
                     selectedPlaneId === plane.id ? "bg-amber-50" : ""
                   }`}
                 >
+                  {/* Indicador de cor por origem do plano */}
                   <span
                     className={`h-2 w-2 rounded-full ${
                       selectedPlaneId === plane.id
                         ? "bg-amber-400"
-                        : "bg-violet-400"
+                        : plane.source === "suggested_natural"
+                          ? "bg-violet-400"
+                          : plane.source === "suggested_grid_fallback"
+                            ? "bg-amber-500"
+                            : "bg-gray-400"
                     }`}
                   />
                   <span className="text-gray-700">
@@ -266,6 +271,7 @@ export function SplitPanel({
                     pos ({fmm(plane.px)}, {fmm(plane.py)}, {fmm(plane.pz)}) mm
                   </span>
                 </li>
+
               ))}
             </ul>
           )}

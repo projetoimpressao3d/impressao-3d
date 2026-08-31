@@ -185,15 +185,8 @@ impressora"). Não implementar nenhuma lista de modelos comerciais de impressora
 1. Usuário seleciona um modelo e uma mesa de trabalho.
 2. Backend compara a bounding box do modelo com as dimensões da mesa de trabalho.
    Se já cabe em todos os eixos, pular direto para o passo 6 (nenhum corte necessário).
-3. Se não cabe, o backend calcula o número mínimo de cortes necessários por eixo
-   (`ceil(dimensão_modelo / dimensão_mesa)`) e retorna posições de corte sugeridas
-   (divisão em partes aproximadamente iguais) — isso é heurística simples, **não é IA**.
-4. No frontend, o usuário vê o modelo com um ou mais planos de corte sobrepostos
-   (usar `THREE.Plane` + `material.clippingPlanes` para o preview, é performático e não exige
-   recomputar geometria a cada movimento). O usuário arrasta/gira os planos
-   (`TransformControls` do drei). A cada movimento, o frontend recalcula localmente a bounding
-   box de cada pedaço resultante e mostra visualmente se cabe (verde) ou não (vermelho) na
-   mesa de trabalho.
+3. Se não cabe, o backend gera sugestões de corte em duas etapas: a. Detecção de pontos naturais de corte: fatiar o modelo com trimesh.section em planos paralelos ao longo de várias direções (os eixos principais da bounding box mais um conjunto de direções adicionais distribuídas ao redor do modelo — não só um único eixo global, para pegar protuberâncias fora de eixo). Para cada direção, calcular a área da seção transversal em cada posição e identificar mínimos locais ("gargalos") — esses são candidatos de corte com alta chance de coincidir com junções naturais do objeto (pescoço, pulsos, base de braços/pernas, conexões estruturais em geral). Isso é geometria pura via trimesh/numpy — não usa IA/LLM, é determinístico e barato de rodar. b. Seleção da combinação de cortes: busca gulosa que escolhe, entre os candidatos detectados, o menor conjunto de cortes que faz cada peça resultante caber na mesa de trabalho, priorizando sempre os candidatos de menor área de seção transversal. Se, após esgotar os candidatos naturais dentro de uma peça, ela ainda não couber (ex: um torso sem nenhum "gargalo" interno), aplicar como reforço a heurística de corte em grade (ceil(dimensão_peça / dimensão_mesa)) somente nessa peça específica — não no modelo inteiro. Cada plano sugerido carrega uma tag de origem: "suggested_natural" (veio da detecção de gargalos) ou "suggested_grid_fallback" (veio do reforço em grade).
+4. No frontend, o usuário vê o modelo com os planos de corte sugeridos já posicionados (usar THREE.Plane + material.clippingPlanes para o preview, é performático e não exige recomputar geometria a cada movimento). Ele pode aprovar cada sugestão como está, arrastar para ajustar (TransformControls do drei), remover uma sugestão, ou adicionar cortes manuais — é o mesmo mecanismo de edição interativa já usado para corte manual, só que pré-preenchido com as sugestões em vez de começar em branco. A cada movimento, o frontend recalcula localmente a bounding box de cada pedaço resultante e mostra visualmente se cabe (verde) ou não (vermelho) na mesa de trabalho.
 5. Ao confirmar, o frontend envia os planos de corte definitivos para o backend Python
    (`POST /split-sessions/{id}/execute`), que:
    a. Roda um passo de reparo prévio na malha (`trimesh` — fechar buracos, corrigir normais)
@@ -210,9 +203,11 @@ impressora"). Não implementar nenhuma lista de modelos comerciais de impressora
 - Com assinatura ativa (subscriptions.status = 'active'): usuário pode executar o corte de fato (passo 5), baixar as peças (passo 6) e gerar encaixes automáticos (pino + furo) nas faces de corte. Não há limite de quantidade de divisões por mês nem contador de uso — o controle de acesso é binário (assinante ativo ou não), não por quantidade consumida.
 - Tolerância entre pino e furo dos encaixes é configurável por material (ex: PLA ≈ 0,2mm de folga por lado; manter essa tabela de tolerâncias em um arquivo de configuração, não hardcoded no meio da lógica de corte).
 
-**Não implementar nesta fase:** segmentação automática por IA/visão computacional
-("cortes inteligentes" que decidem sozinhos onde cortar seguindo contornos do objeto). O
-usuário decidiu explicitamente que a v1 é corte assistido pelo usuário, não automático.
+**Decisão revisada: a v1 agora inclui sugestão automática de corte (detecção de pontos naturais/gargalos, seção acima) — isso substitui uma decisão anterior deste documento que previa só corte manual na v1. O usuário sempre revisa e aprova/ajusta cada sugestão antes da execução (passo 4); a ferramenta nunca corta sem confirmação.
+Não implementar nesta fase:
+- Segmentação por modelo de IA/visão computacional treinado (ex: rede neural de segmentação de malha) — a detecção de pontos de corte é 100% geometria/matemática (trimesh/numpy), não Machine Learning.
+- Extração de esqueleto (curve-skeleton) para seguir membros curvados/dobrados com mais precisão — a v1 escaneia por direções fixas (eixos principais + direções adicionais), o que cobre bem a maioria dos casos mas pode não achar o gargalo ideal em um membro muito dobrado. Fica como melhoria futura se necessário.
+- Nomeação automática de peças via IA (ex: "braço direito", "perna esquerda") no guia de montagem — por enquanto os rótulos ficam genéricos (Peça 1, Peça 2...). Decisão do usuário, pode ser revisitada depois do beta.
 
 ### 6.5 Geração de modelo via IA (fase 2 — depois do MVP)
 Integração com a API da Meshy (text-to-3D e image-to-3D). Ver documentação oficial em

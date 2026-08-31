@@ -312,22 +312,18 @@ export function ModelViewer({
       const data = (await res.json()) as PlanSessionResponse;
       setSessionId(data.split_session_id);
 
-      // Converter planos sugeridos em CutPlaneData com quaternion
+      // Converter planos sugeridos → CutPlaneData com quaternion e source
       const initialPlanes: CutPlaneData[] = data.cut_planes.map((cp) => {
         const q = quaternionFromNormal(cp.normal);
-        const pos = { x: 0, y: 0, z: 0 };
-        if (cp.axis === "x") pos.x = cp.position_mm;
-        else if (cp.axis === "y") pos.y = cp.position_mm;
-        else pos.z = cp.position_mm;
-
         planeCounterRef.current += 1;
         return {
           id: `plane-${planeCounterRef.current}`,
-          px: pos.x,
-          py: pos.y,
-          pz: pos.z,
+          px: cp.origin[0],
+          py: cp.origin[1],
+          pz: cp.origin[2],
           ...q,
           label: cp.label,
+          source: cp.source, // "suggested_natural" | "suggested_grid_fallback"
         };
       });
 
@@ -339,6 +335,7 @@ export function ModelViewer({
       setSplitMode("error");
     }
   }, [model.id, selectedPlateId]);
+
 
   const handleAddPlane = useCallback(() => {
     planeCounterRef.current += 1;
@@ -353,10 +350,12 @@ export function ModelViewer({
       qz: 0,
       qw: 1,
       label: "",
+      source: "manual",
     };
     setCutPlanes((prev) => [...prev, newPlane]);
     setSelectedPlaneId(newPlane.id);
   }, []);
+
 
   const handleRemovePlane = useCallback((id: string) => {
     setCutPlanes((prev) => prev.filter((p) => p.id !== id));

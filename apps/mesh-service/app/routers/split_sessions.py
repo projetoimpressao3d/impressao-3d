@@ -22,7 +22,8 @@ from pydantic import BaseModel
 
 from app.deps import get_supabase_client, verify_internal_token
 from app.mesh.cutter import CutPlaneInput, cut_mesh_by_planes
-from app.mesh.geometry import CutPlane, Dimensions, SplitPlan, compute_split_plan
+from app.mesh.geometry import Dimensions, compute_split_plan
+from app.mesh.natural_cuts import SuggestedCutPlane, suggest_cuts
 from app.mesh.repair import load_and_normalize, repair_mesh
 from app.storage import create_download_url, download_to_tempfile, upload_bytes
 
@@ -44,12 +45,12 @@ class SplitSessionRequest(BaseModel):
 
 
 class CutPlaneOut(BaseModel):
-    """Plano de corte sugerido, serializado para JSON."""
+    """Plano de corte sugerido, serializado para JSON (inclui source)."""
 
-    axis: str
-    position_mm: float
     normal: list[float]
+    origin: list[float]   # posicao 3D do plano (coordenadas centradas)
     label: str
+    source: str           # "suggested_natural" | "suggested_grid_fallback"
 
 
 class SplitSessionResponse(BaseModel):
@@ -59,7 +60,6 @@ class SplitSessionResponse(BaseModel):
     fits: bool
     model_dimensions: dict[str, float]
     plate_dimensions: dict[str, float]
-    cuts_needed: dict[str, int]
     cut_planes: list[CutPlaneOut]
 
 
@@ -72,72 +72,115 @@ class SplitSessionResponse(BaseModel):
     "/split-sessions",
     response_model=SplitSessionResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Planejar cortes de um modelo 3D",
+    summary="Planejar cortes de um modelo 3D com sugestoes automaticas",
     description=(
-        "Compara a bounding box do modelo com as dimensões da mesa de trabalho. "
-        "Se cabe: retorna fits=true sem planos de corte. "
-        "Se não cabe: calcula o número mínimo de cortes por eixo "
-        "(ceil(dim_modelo / dim_mesa) − 1) e retorna as posições sugeridas "
-        "(divisão em partes iguais, relativas ao centro do modelo). "
-        "Persiste uma split_session com status='draft'. "
-        "Seção 6.4 do AGENTS.md — heurística simples, não é IA."
+        "Compara o modelo com a mesa de trabalho. Se cabe, retorna fits=True. "
+        "Se nao cabe, analisa o modelo com trimesh.section para detectar gargalos "
+        "naturais (juncos, pescoco, etc.) e sugere o menor conjunto de cortes. "
+        "Fallback em grade quando nao ha gargalo suficiente. "
+        "Persiste split_session com status='draft'. Secao 6.4 do AGENTS.md."
     ),
 )
 async def plan_split_session(
     payload: SplitSessionRequest,
     _auth: None = Depends(verify_internal_token),
 ) -> SplitSessionResponse:
-    """Planeja os cortes necessários para um modelo 3D numa mesa de trabalho."""
+    """Planeja os cortes com deteccao automatica de gargalos naturais."""
     supabase = _get_supabase_client()
 
-    # 1. Buscar modelo — verifica posse via user_id do payload
+    # 1. Buscar modelo — verifica posse via user_id
     model = _fetch_model(supabase, payload.model_id, payload.user_id)
     if model is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Modelo não encontrado ou não pertence a este usuário.",
+            detail="Modelo nao encontrado ou nao pertence a este usuario.",
         )
 
-    # 2. Verificar se a bounding box já foi calculada pela análise de printability
+    # 2. Verificar se a bounding box ja foi calculada
     if model.get("bounding_box_x_mm") is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                "O modelo ainda não foi analisado. "
-                "Aguarde a conclusão da análise de printability antes de planejar os cortes."
+                "O modelo ainda nao foi analisado. "
+                "Aguarde a conclusao da analise de printability antes de planejar os cortes."
             ),
         )
 
-    # 3. Buscar mesa de trabalho — verifica posse
+    # 3. Buscar mesa de trabalho
     plate = _fetch_build_plate(supabase, payload.build_plate_id, payload.user_id)
     if plate is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Mesa de trabalho não encontrada ou não pertence a este usuário.",
+            detail="Mesa de trabalho nao encontrada ou nao pertence a este usuario.",
         )
 
-    # 4. Calcular plano de cortes (puro — sem I/O)
     model_dims = Dimensions(
         x=float(model["bounding_box_x_mm"]),
         y=float(model["bounding_box_y_mm"]),
         z=float(model["bounding_box_z_mm"]),
     )
-    plate_dims = Dimensions(
-        x=float(plate["build_volume_x_mm"]),
-        y=float(plate["build_volume_y_mm"]),
-        z=float(plate["build_volume_z_mm"]),
-    )
-    plan = compute_split_plan(model_dims, plate_dims)
+    plate_dims_dict = {
+        "x": float(plate["build_volume_x_mm"]),
+        "y": float(plate["build_volume_y_mm"]),
+        "z": float(plate["build_volume_z_mm"]),
+    }
 
-    # 5. Serializar planos de corte para JSONB
-    cut_planes_json: list[dict[str, Any]] = [
+    # 4. Tentar sugestao automatica via deteccao de gargalos naturais
+    suggested_planes: list[SuggestedCutPlane] = []
+    fits = False
+    try:
+        download_url = create_download_url(
+            supabase, model["storage_path"], expires_in=600
+        )
+        tmp_path = await download_to_tempfile(download_url, model["storage_path"])
+        mesh = load_and_normalize(tmp_path)
+
+        # Centrar o mesh (espelha geo.center() do Three.js)
+        bbox_center = mesh.bounds.mean(axis=0)
+        mesh.apply_translation(-bbox_center)
+
+        suggestion = suggest_cuts(mesh, plate_dims_dict)
+        fits = suggestion.fits
+        suggested_planes = suggestion.cut_planes
+        logger.info(
+            "suggest_cuts concluido: fits=%s planos=%d",
+            fits, len(suggested_planes),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "suggest_cuts falhou (%s) — usando heuristica de grade como fallback", exc
+        )
+        # Fallback: heuristica de grade pura (sem analise da malha)
+        from app.mesh.geometry import Dimensions as _Dims, compute_split_plan as _plan  # noqa: PLC0415
+        plate_dims_obj = _Dims(**{k: v for k, v in plate_dims_dict.items()})
+        grid_plan = _plan(model_dims, plate_dims_obj)
+        fits = grid_plan.fits
+        for cp in grid_plan.cut_planes:
+            origin = [0.0, 0.0, 0.0]
+            if cp.axis == "x":
+                origin[0] = cp.position_mm
+            elif cp.axis == "y":
+                origin[1] = cp.position_mm
+            else:
+                origin[2] = cp.position_mm
+            suggested_planes.append(
+                SuggestedCutPlane(
+                    normal=cp.normal,
+                    origin=origin,
+                    label=cp.label,
+                    source="suggested_grid_fallback",
+                )
+            )
+
+    # 5. Serializar planos para JSONB (inclui source)
+    cut_planes_json: list[dict] = [
         {
-            "axis": cp.axis,
-            "position_mm": cp.position_mm,
             "normal": cp.normal,
+            "origin": cp.origin,
             "label": cp.label,
+            "source": cp.source,
         }
-        for cp in plan.cut_planes
+        for cp in suggested_planes
     ]
 
     # 6. Persistir split_session com status='draft'
@@ -151,40 +194,34 @@ async def plan_split_session(
     if session is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Erro ao criar sessão de corte. Tente novamente.",
+            detail="Erro ao criar sessao de corte. Tente novamente.",
         )
 
     logger.info(
-        "Split session criada: id=%s fits=%s cortes_por_eixo=%s",
-        session["id"],
-        plan.fits,
-        plan.cuts_needed,
+        "Split session criada: id=%s fits=%s planos=%d",
+        session["id"], fits, len(suggested_planes),
     )
 
     return SplitSessionResponse(
         split_session_id=session["id"],
-        fits=plan.fits,
+        fits=fits,
         model_dimensions={
             "x": model_dims.x,
             "y": model_dims.y,
             "z": model_dims.z,
         },
-        plate_dimensions={
-            "x": plate_dims.x,
-            "y": plate_dims.y,
-            "z": plate_dims.z,
-        },
-        cuts_needed=plan.cuts_needed,
+        plate_dimensions=plate_dims_dict,
         cut_planes=[
             CutPlaneOut(
-                axis=cp.axis,
-                position_mm=cp.position_mm,
                 normal=cp.normal,
+                origin=cp.origin,
                 label=cp.label,
+                source=cp.source,
             )
-            for cp in plan.cut_planes
+            for cp in suggested_planes
         ],
     )
+
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +244,8 @@ def _fetch_model(
         result = (
             supabase.table("models")
             .select(
-                "id, user_id, bounding_box_x_mm, bounding_box_y_mm, "
+                "id, user_id, storage_path, format, "
+                "bounding_box_x_mm, bounding_box_y_mm, "
                 "bounding_box_z_mm, printability_status"
             )
             .eq("id", model_id)

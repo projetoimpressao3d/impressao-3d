@@ -25,10 +25,34 @@ interface CutPlaneMeshProps {
 }
 
 /**
+ * Cores por origem do plano de corte:
+ * - suggested_natural:       roxo  (#7c3aed / #a78bfa)
+ * - suggested_grid_fallback: âmbar (#b45309 / #d97706)
+ * - manual:                  cinza (#4b5563 / #6b7280)
+ * Quando selecionado, sempre âmbar brilhante (#f59e0b).
+ */
+function getPlaneColors(
+  source: CutPlaneData["source"],
+  isSelected: boolean,
+): { fill: string; border: string } {
+  if (isSelected) return { fill: "#f59e0b", border: "#f59e0b" };
+  switch (source) {
+    case "suggested_natural":
+      return { fill: "#a78bfa", border: "#7c3aed" };
+    case "suggested_grid_fallback":
+      return { fill: "#d97706", border: "#b45309" };
+    case "manual":
+    default:
+      return { fill: "#6b7280", border: "#4b5563" };
+  }
+}
+
+/**
  * Disco visual de um plano de corte + TransformControls quando selecionado.
  *
  * - PlaneGeometry com normal padrão [0,0,1] (plano XY)
  * - Quaternion aplicado via prop `quaternion` do mesh
+ * - Cor varia conforme `source` do plano (natural/grade/manual)
  * - TransformControls attaches via ref após mount
  * - OrbitControls desabilitado automaticamente durante drag (makeDefault)
  */
@@ -41,7 +65,6 @@ export function CutPlaneMesh({
   onPlaneMoved,
   onDragEnd,
 }: CutPlaneMeshProps) {
-  // useRef<THREE.Object3D> para compatibilidade com TransformControls
   const meshRef = useRef<THREE.Object3D>(null);
   const quaternion = new THREE.Quaternion(
     plane.qx,
@@ -49,6 +72,7 @@ export function CutPlaneMesh({
     plane.qz,
     plane.qw,
   );
+  const { fill, border } = getPlaneColors(plane.source, isSelected);
 
   const handleChange = useCallback(() => {
     if (!meshRef.current) return;
@@ -64,7 +88,7 @@ export function CutPlaneMesh({
 
   return (
     <>
-      {/* Disco visual do plano de corte */}
+      {/* Disco preenchido semi-transparente */}
       <mesh
         ref={meshRef}
         position={[plane.px, plane.py, plane.pz]}
@@ -74,10 +98,9 @@ export function CutPlaneMesh({
           onSelect(plane.id);
         }}
       >
-        {/* Disco preenchido semi-transparente */}
         <circleGeometry args={[diskRadius, 64]} />
         <meshBasicMaterial
-          color={isSelected ? "#f59e0b" : "#a78bfa"}
+          color={fill}
           transparent
           opacity={0.3}
           side={THREE.DoubleSide}
@@ -89,7 +112,7 @@ export function CutPlaneMesh({
       <mesh position={[plane.px, plane.py, plane.pz]} quaternion={quaternion}>
         <ringGeometry args={[diskRadius * 0.97, diskRadius, 64]} />
         <meshBasicMaterial
-          color={isSelected ? "#f59e0b" : "#7c3aed"}
+          color={border}
           side={THREE.DoubleSide}
           depthWrite={false}
         />
