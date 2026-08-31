@@ -92,10 +92,29 @@ export function SplitPanel({
   // ── Estado: loading ───────────────────────────────────────────────────────
   if (splitMode === "loading") {
     return (
-      <div className="mt-4 flex items-center gap-3 rounded-xl border border-gray-200 bg-white p-4">
-        <div className="h-5 w-5 animate-spin rounded-full border-2 border-violet-600 border-t-transparent" />
-        <p className="text-sm text-gray-600">
-          Calculando planos de corte sugeridos…
+      <div className="mt-4 rounded-xl border border-violet-100 bg-violet-50 p-4">
+        <div className="flex items-center gap-3">
+          <div className="h-5 w-5 animate-spin rounded-full border-2 border-violet-600 border-t-transparent" />
+          <p className="text-sm font-medium text-violet-800">
+            Analisando geometria do modelo…
+          </p>
+        </div>
+        <div className="mt-3 space-y-1.5 pl-8">
+          <p className="flex items-center gap-1.5 text-xs text-violet-700">
+            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />
+            Baixando malha do modelo
+          </p>
+          <p className="flex items-center gap-1.5 text-xs text-violet-700">
+            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400 [animation-delay:0.3s]" />
+            Varrendo 9 direções em busca de gargalos naturais
+          </p>
+          <p className="flex items-center gap-1.5 text-xs text-violet-700">
+            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400 [animation-delay:0.6s]" />
+            Selecionando cortes mínimos necessários
+          </p>
+        </div>
+        <p className="mt-3 text-xs text-violet-500">
+          Pode levar 10–40 s dependendo do tamanho do modelo.
         </p>
       </div>
     );
@@ -152,6 +171,13 @@ export function SplitPanel({
       pieceBboxes.length > 0 && pieceBboxes.every((p) => p.fits);
     const someNoFit = pieceBboxes.some((p) => !p.fits);
 
+    const naturalCount = cutPlanes.filter(
+      (p) => p.source === "suggested_natural",
+    ).length;
+    const gridCount = cutPlanes.filter(
+      (p) => p.source === "suggested_grid_fallback",
+    ).length;
+
     return (
       <div className="mt-4 space-y-3">
         {/* Cabeçalho com botões de modo */}
@@ -176,6 +202,32 @@ export function SplitPanel({
             Cancelar
           </button>
         </div>
+
+        {/* Banner de sugestão automática */}
+        {cutPlanes.length > 0 && (naturalCount > 0 || gridCount > 0) && (
+          <div className="rounded-xl border border-violet-100 bg-violet-50 px-4 py-3">
+            <p className="text-xs font-medium text-violet-800">
+              🤖 Sugestão automática gerada
+            </p>
+            <div className="mt-1.5 flex flex-wrap gap-3">
+              {naturalCount > 0 && (
+                <span className="flex items-center gap-1 text-xs text-violet-700">
+                  <span className="inline-block h-2 w-2 rounded-full bg-violet-400" />
+                  {naturalCount} gargalo{naturalCount > 1 ? "s" : ""} natural{naturalCount > 1 ? "is" : ""} detectado{naturalCount > 1 ? "s" : ""}
+                </span>
+              )}
+              {gridCount > 0 && (
+                <span className="flex items-center gap-1 text-xs text-amber-700">
+                  <span className="inline-block h-2 w-2 rounded-full bg-amber-500" />
+                  {gridCount} divisão{gridCount > 1 ? "ões" : ""} em grade (sem gargalo natural)
+                </span>
+              )}
+            </div>
+            <p className="mt-1.5 text-xs text-violet-500">
+              Você pode mover, girar ou remover qualquer plano antes de executar.
+            </p>
+          </div>
+        )}
 
         {/* Controles do plano selecionado */}
         {selectedPlaneId && (
@@ -229,9 +281,26 @@ export function SplitPanel({
             </button>
           </div>
 
+          {/* Legenda de cores */}
+          <div className="flex flex-wrap items-center gap-3 border-b border-gray-50 bg-gray-50 px-3 py-2">
+            <span className="text-xs font-medium text-gray-400">Legenda:</span>
+            <span className="flex items-center gap-1 text-xs text-gray-500">
+              <span className="inline-block h-2 w-2 rounded-full bg-violet-400" />
+              Gargalo natural
+            </span>
+            <span className="flex items-center gap-1 text-xs text-gray-500">
+              <span className="inline-block h-2 w-2 rounded-full bg-amber-500" />
+              Divisão em grade
+            </span>
+            <span className="flex items-center gap-1 text-xs text-gray-500">
+              <span className="inline-block h-2 w-2 rounded-full bg-gray-400" />
+              Manual
+            </span>
+          </div>
+
           {cutPlanes.length === 0 ? (
             <p className="px-3 py-4 text-center text-xs text-gray-400">
-              Nenhum plano de corte. Clique em "+ Adicionar plano" para começar.
+              Nenhum plano de corte. Clique em &quot;+ Adicionar plano&quot; para começar.
             </p>
           ) : (
             <ul className="divide-y divide-gray-50">
@@ -243,33 +312,54 @@ export function SplitPanel({
                       selectedPlaneId === plane.id ? null : plane.id,
                     )
                   }
-                  className={`flex cursor-pointer items-center gap-2 px-3 py-2.5 text-sm transition hover:bg-gray-50 ${
+                  className={`cursor-pointer px-3 py-2.5 transition hover:bg-gray-50 ${
                     selectedPlaneId === plane.id ? "bg-amber-50" : ""
                   }`}
                 >
-                  {/* Indicador de cor por origem do plano */}
-                  <span
-                    className={`h-2 w-2 rounded-full ${
-                      selectedPlaneId === plane.id
-                        ? "bg-amber-400"
-                        : plane.source === "suggested_natural"
-                          ? "bg-violet-400"
-                          : plane.source === "suggested_grid_fallback"
-                            ? "bg-amber-500"
-                            : "bg-gray-400"
-                    }`}
-                  />
-                  <span className="text-gray-700">
-                    Plano {idx + 1}
-                    {plane.label && (
-                      <span className="ml-1 text-xs text-gray-400">
-                        ({plane.label})
+                  {/* Linha principal: ponto + nome + badge */}
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`h-2 w-2 shrink-0 rounded-full ${
+                        selectedPlaneId === plane.id
+                          ? "bg-amber-400"
+                          : plane.source === "suggested_natural"
+                            ? "bg-violet-400"
+                            : plane.source === "suggested_grid_fallback"
+                              ? "bg-amber-500"
+                              : "bg-gray-400"
+                      }`}
+                    />
+                    <span className="text-sm text-gray-700">
+                      Plano {idx + 1}
+                    </span>
+
+                    {/* Badge por tipo de sugestão */}
+                    {plane.source === "suggested_natural" && (
+                      <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700">
+                        🔬 Gargalo natural
                       </span>
                     )}
-                  </span>
-                  <span className="ml-auto text-xs text-gray-400">
-                    pos ({fmm(plane.px)}, {fmm(plane.py)}, {fmm(plane.pz)}) mm
-                  </span>
+                    {plane.source === "suggested_grid_fallback" && (
+                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                        📐 Divisão em grade
+                      </span>
+                    )}
+                    {plane.source === "manual" && (
+                      <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500">
+                        ✏️ Manual
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Linha secundária: label + posição */}
+                  <div className="mt-0.5 flex items-center gap-2 pl-4">
+                    {plane.label && (
+                      <span className="text-xs text-gray-400">{plane.label}</span>
+                    )}
+                    <span className="ml-auto text-xs text-gray-400">
+                      pos ({fmm(plane.px)}, {fmm(plane.py)}, {fmm(plane.pz)}) mm
+                    </span>
+                  </div>
                 </li>
 
               ))}
