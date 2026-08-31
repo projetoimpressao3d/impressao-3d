@@ -10,6 +10,7 @@ import type {
   Model,
   PieceBboxStatus,
   PlanSessionResponse,
+  SuggestResponse,
 } from "@/types/database";
 import { ViewerOverlay } from "./viewer-overlay";
 import { SplitPanel } from "@/components/split/split-panel";
@@ -38,6 +39,7 @@ type SplitMode =
   | "idle"
   | "loading"
   | "planning"
+  | "suggesting"   // análise automática de gargalos em andamento
   | "executing"
   | "done"
   | "error";
@@ -336,6 +338,49 @@ export function ModelViewer({
     }
   }, [model.id, selectedPlateId]);
 
+  /** Aciona a análise automática de gargalos naturais para a sessão atual. */
+  const handleAutoSuggest = useCallback(async () => {
+    if (!sessionId) return;
+    setSplitMode("suggesting");
+    setSplitError(null);
+
+    try {
+      const res = await fetch(`/api/split-sessions/${sessionId}/suggest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        const err = (await res.json()) as { detail?: string };
+        throw new Error(err.detail ?? `HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as SuggestResponse;
+
+      // Substituir planos pelos sugeridos automaticamente
+      const newPlanes: CutPlaneData[] = data.cut_planes.map((cp) => {
+        const q = quaternionFromNormal(cp.normal);
+        planeCounterRef.current += 1;
+        return {
+          id: `plane-${planeCounterRef.current}`,
+          px: cp.origin[0],
+          py: cp.origin[1],
+          pz: cp.origin[2],
+          ...q,
+          label: cp.label,
+          source: cp.source as CutPlaneData["source"],
+        };
+      });
+
+      setCutPlanes(newPlanes);
+      setPieceBboxes([]);
+      setSelectedPlaneId(null);
+      setSplitMode("planning");
+    } catch (err) {
+      // Não sai do modo planning — só mostra erro
+      setSplitError(String(err));
+      setSplitMode("planning");
+    }
+  }, [sessionId]);
 
   const handleAddPlane = useCallback(() => {
     planeCounterRef.current += 1;
@@ -503,6 +548,7 @@ export function ModelViewer({
           selectedPlateId={selectedPlateId}
           hasSubscription={hasSubscription}
           onStartSplit={handleStartSplit}
+          onAutoSuggest={handleAutoSuggest}
           onAddPlane={handleAddPlane}
           onRemovePlane={handleRemovePlane}
           onSelectPlane={setSelectedPlaneId}

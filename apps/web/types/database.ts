@@ -178,3 +178,16 @@ export interface ExecutedPiece {
   fits_build_plate: boolean;
   download_url: string | null;
 }
+
+/** Resposta do POST /split-sessions/{id}/suggest (análise automática de gargalos). */
+export interface SuggestResponse {
+  split_session_id: string;
+  cut_planes: Array<{
+    normal: number[];
+    origin: number[];
+    label: string;
+    source: "suggested_natural" | "suggested_grid_fallback";
+  }>;
+  natural_count: number;
+  grid_count: number;
+}

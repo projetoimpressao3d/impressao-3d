@@ -3,10 +3,10 @@ Deteccao automatica de pontos naturais de corte para divisao de malhas 3D.
 
 Secao 6.4 do AGENTS.md - passos 3a e 3b:
 
-3a. Varrer o modelo com trimesh.section em multiplas direcoes (3 eixos principais
-    + 6 diagonais = 9 direcoes), calcular a area da seccao transversal em cada posicao
-    e identificar minimos locais ("gargalos") - candidatos de corte com alta chance de
-    coincidir com juncoes naturais do objeto.
+3a. Varrer o modelo com trimesh.section em 18 direcoes (3 eixos principais +
+    6 diagonais de face + 4 diagonais 3D + 5 diagonais rasas), calcular a area
+    da seccao transversal em cada posicao e identificar minimos locais ("gargalos")
+    — candidatos de corte com alta chance de coincidir com juncoes naturais do objeto.
 
 3b. Selecao gulosa que escolhe o menor conjunto de cortes priorizando candidatos de menor
     area. Fallback em grade para pecas sem gargalo natural suficiente.
@@ -23,17 +23,40 @@ import trimesh
 logger = logging.getLogger(__name__)
 
 _v2 = 1.0 / math.sqrt(2)
+_v3 = 1.0 / math.sqrt(3)
+_v5a = 2.0 / math.sqrt(5)   # componente maior em diagonais rasas
+_v5b = 1.0 / math.sqrt(5)   # componente menor em diagonais rasas
 
+# 18 direcoes de varredura distribuidas uniformemente:
+#   - 3 eixos principais (X, Y, Z)
+#   - 6 diagonais de face (XY, YZ, XZ nos dois sinais)
+#   - 4 diagonais 3D (todas as combinacoes de ±X±Y±Z / sqrt(3))
+#   - 5 diagonais rasas (vies maior em 1 eixo) para capturar membros inclinados
 _SCAN_DIRECTIONS: list[np.ndarray] = [
+    # Eixos principais
     np.array([1.0, 0.0, 0.0]),
     np.array([0.0, 1.0, 0.0]),
     np.array([0.0, 0.0, 1.0]),
-    np.array([_v2, _v2, 0.0]),
-    np.array([_v2, -_v2, 0.0]),
-    np.array([_v2, 0.0, _v2]),
-    np.array([_v2, 0.0, -_v2]),
-    np.array([0.0, _v2, _v2]),
-    np.array([0.0, _v2, -_v2]),
+    # Diagonais de face (planos XY, YZ, XZ)
+    np.array([_v2,  _v2,  0.0]),
+    np.array([_v2, -_v2,  0.0]),
+    np.array([_v2,  0.0,  _v2]),
+    np.array([_v2,  0.0, -_v2]),
+    np.array([0.0,  _v2,  _v2]),
+    np.array([0.0,  _v2, -_v2]),
+    # Diagonais 3D (quatro octantes — suficiente por simetria)
+    np.array([_v3,  _v3,  _v3]),
+    np.array([_v3,  _v3, -_v3]),
+    np.array([_v3, -_v3,  _v3]),
+    np.array([_v3, -_v3, -_v3]),
+    # Diagonais rasas (vies em X — membros com mais extensao horizontal)
+    np.array([_v5a,  _v5b,  0.0]),
+    np.array([_v5a, -_v5b,  0.0]),
+    # Diagonais rasas (vies em Y — membros com mais extensao vertical)
+    np.array([_v5b,  _v5a,  0.0]),
+    np.array([0.0,   _v5a,  _v5b]),
+    # Diagonal rasa (vies em Z — plataformas / caudas horizontais)
+    np.array([_v5b,  0.0,   _v5a]),
 ]
 
 _N_SLICES: int = 40

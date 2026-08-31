@@ -5,7 +5,7 @@ import type { BuildPlate, CutPlaneData, PieceBboxStatus, ExecutedPiece } from "@
 interface SplitPanelProps {
   // Sessão
   sessionId: string | null;
-  splitMode: "idle" | "loading" | "planning" | "executing" | "done" | "error";
+  splitMode: "idle" | "loading" | "planning" | "suggesting" | "executing" | "done" | "error";
   splitError: string | null;
 
   // Planos de corte
@@ -25,6 +25,7 @@ interface SplitPanelProps {
 
   // Callbacks
   onStartSplit: () => void;
+  onAutoSuggest: () => void;
   onAddPlane: () => void;
   onRemovePlane: (id: string) => void;
   onSelectPlane: (id: string | null) => void;
@@ -55,6 +56,7 @@ export function SplitPanel({
   selectedPlateId,
   hasSubscription,
   onStartSplit,
+  onAutoSuggest,
   onAddPlane,
   onRemovePlane,
   onSelectPlane,
@@ -64,6 +66,7 @@ export function SplitPanel({
   onPlateChange,
 }: SplitPanelProps) {
   const selectedPlate = buildPlates.find((p) => p.id === selectedPlateId);
+  const isSuggesting = splitMode === "suggesting";
 
   // ── Estado: idle ─────────────────────────────────────────────────────────
   if (splitMode === "idle") {
@@ -165,8 +168,8 @@ export function SplitPanel({
     );
   }
 
-  // ── Estado: planning ─────────────────────────────────────────────────────
-  if (splitMode === "planning") {
+  // ── Estado: planning / suggesting ────────────────────────────────────────
+  if (splitMode === "planning" || splitMode === "suggesting") {
     const allFit =
       pieceBboxes.length > 0 && pieceBboxes.every((p) => p.fits);
     const someNoFit = pieceBboxes.some((p) => !p.fits);
@@ -182,7 +185,7 @@ export function SplitPanel({
       <div className="mt-4 space-y-3">
         {/* Cabeçalho com botões de modo */}
         <div className="flex items-center justify-between rounded-xl border border-gray-200 bg-white p-3">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-medium text-gray-800">
               ✂️ Editor de cortes
             </span>
@@ -195,16 +198,62 @@ export function SplitPanel({
               </span>
             )}
           </div>
-          <button
-            onClick={onCancel}
-            className="text-xs text-gray-400 hover:text-gray-600"
-          >
-            Cancelar
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Botão de análise automática */}
+            <button
+              onClick={onAutoSuggest}
+              disabled={isSuggesting}
+              className="flex items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isSuggesting ? (
+                <>
+                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                  Analisando…
+                </>
+              ) : (
+                <>🤖 Cortes Automáticos</>
+              )}
+            </button>
+            <button
+              onClick={onCancel}
+              className="text-xs text-gray-400 hover:text-gray-600"
+            >
+              Cancelar
+            </button>
+          </div>
         </div>
 
-        {/* Banner de sugestão automática */}
-        {cutPlanes.length > 0 && (naturalCount > 0 || gridCount > 0) && (
+        {/* Banner de progresso durante análise automática */}
+        {isSuggesting && (
+          <div className="rounded-xl border border-violet-100 bg-violet-50 px-4 py-3">
+            <div className="flex items-center gap-2">
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-violet-500 border-t-transparent" />
+              <p className="text-xs font-medium text-violet-800">
+                Analisando geometria do modelo em 18 direções…
+              </p>
+            </div>
+            <div className="mt-2 space-y-1 pl-6">
+              <p className="flex items-center gap-1.5 text-xs text-violet-600">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />
+                Baixando e reparando malha
+              </p>
+              <p className="flex items-center gap-1.5 text-xs text-violet-600">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400 [animation-delay:0.3s]" />
+                Varrendo eixos, diagonais e direções compostas
+              </p>
+              <p className="flex items-center gap-1.5 text-xs text-violet-600">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400 [animation-delay:0.6s]" />
+                Identificando gargalos e selecionando cortes mínimos
+              </p>
+            </div>
+            <p className="mt-2 text-xs text-violet-400">
+              Pode levar 20–60 s dependendo da complexidade. Os planos atuais continuam visíveis.
+            </p>
+          </div>
+        )}
+
+        {/* Banner de resultado da sugestão automática (após análise) */}
+        {!isSuggesting && cutPlanes.length > 0 && (naturalCount > 0 || gridCount > 0) && (
           <div className="rounded-xl border border-violet-100 bg-violet-50 px-4 py-3">
             <p className="text-xs font-medium text-violet-800">
               🤖 Sugestão automática gerada

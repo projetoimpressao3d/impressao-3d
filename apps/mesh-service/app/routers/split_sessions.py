@@ -68,27 +68,43 @@ class SplitSessionResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class SuggestRequest(BaseModel):
+    """Payload para acionar analise automatica de gargalos naturais."""
+    user_id: str
+
+
+class SuggestResponse(BaseModel):
+    """Resultado da analise automatica."""
+    split_session_id: str
+    cut_planes: list[CutPlaneOut]
+    natural_count: int
+    grid_count: int
+
+
+# ---------------------------------------------------------------------------
+# POST /split-sessions — planejamento rapido (grade)
+# ---------------------------------------------------------------------------
+
+
 @router.post(
     "/split-sessions",
     response_model=SplitSessionResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Planejar cortes de um modelo 3D com sugestoes automaticas",
+    summary="Criar sessao de corte com planos de grade iniciais",
     description=(
-        "Compara o modelo com a mesa de trabalho. Se cabe, retorna fits=True. "
-        "Se nao cabe, analisa o modelo com trimesh.section para detectar gargalos "
-        "naturais (juncos, pescoco, etc.) e sugere o menor conjunto de cortes. "
-        "Fallback em grade quando nao ha gargalo suficiente. "
-        "Persiste split_session com status='draft'. Secao 6.4 do AGENTS.md."
+        "Resposta rapida: compara bbox do modelo com a mesa e retorna planos de grade "
+        "como sugestao inicial. Para sugestao por gargalos naturais, use "
+        "POST /split-sessions/{id}/suggest em seguida."
     ),
 )
 async def plan_split_session(
     payload: SplitSessionRequest,
     _auth: None = Depends(verify_internal_token),
 ) -> SplitSessionResponse:
-    """Planeja os cortes com deteccao automatica de gargalos naturais."""
+    """Planejamento rapido com divisao em grade — sem download da malha."""
     supabase = _get_supabase_client()
 
-    # 1. Buscar modelo — verifica posse via user_id
+    # 1. Buscar modelo
     model = _fetch_model(supabase, payload.model_id, payload.user_id)
     if model is None:
         raise HTTPException(
@@ -96,7 +112,6 @@ async def plan_split_session(
             detail="Modelo nao encontrado ou nao pertence a este usuario.",
         )
 
-    # 2. Verificar se a bounding box ja foi calculada
     if model.get("bounding_box_x_mm") is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -106,7 +121,7 @@ async def plan_split_session(
             ),
         )
 
-    # 3. Buscar mesa de trabalho
+    # 2. Buscar mesa de trabalho
     plate = _fetch_build_plate(supabase, payload.build_plate_id, payload.user_id)
     if plate is None:
         raise HTTPException(
@@ -125,65 +140,35 @@ async def plan_split_session(
         "z": float(plate["build_volume_z_mm"]),
     }
 
-    # 4. Tentar sugestao automatica via deteccao de gargalos naturais
+    # 3. Planos de grade como sugestao inicial
+    plate_dims_obj = Dimensions(**{k: v for k, v in plate_dims_dict.items()})
+    grid_plan = compute_split_plan(model_dims, plate_dims_obj)
+    fits = grid_plan.fits
+
     suggested_planes: list[SuggestedCutPlane] = []
-    fits = False
-    try:
-        download_url = create_download_url(
-            supabase, model["storage_path"], expires_in=600
-        )
-        tmp_path = await download_to_tempfile(download_url, model["storage_path"])
-        mesh = load_and_normalize(tmp_path)
-
-        # Centrar o mesh (espelha geo.center() do Three.js)
-        bbox_center = mesh.bounds.mean(axis=0)
-        mesh.apply_translation(-bbox_center)
-
-        suggestion = suggest_cuts(mesh, plate_dims_dict)
-        fits = suggestion.fits
-        suggested_planes = suggestion.cut_planes
-        logger.info(
-            "suggest_cuts concluido: fits=%s planos=%d",
-            fits, len(suggested_planes),
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "suggest_cuts falhou (%s) — usando heuristica de grade como fallback", exc
-        )
-        # Fallback: heuristica de grade pura (sem analise da malha)
-        from app.mesh.geometry import Dimensions as _Dims, compute_split_plan as _plan  # noqa: PLC0415
-        plate_dims_obj = _Dims(**{k: v for k, v in plate_dims_dict.items()})
-        grid_plan = _plan(model_dims, plate_dims_obj)
-        fits = grid_plan.fits
-        for cp in grid_plan.cut_planes:
-            origin = [0.0, 0.0, 0.0]
-            if cp.axis == "x":
-                origin[0] = cp.position_mm
-            elif cp.axis == "y":
-                origin[1] = cp.position_mm
-            else:
-                origin[2] = cp.position_mm
-            suggested_planes.append(
-                SuggestedCutPlane(
-                    normal=cp.normal,
-                    origin=origin,
-                    label=cp.label,
-                    source="suggested_grid_fallback",
-                )
+    for cp in grid_plan.cut_planes:
+        origin = [0.0, 0.0, 0.0]
+        if cp.axis == "x":
+            origin[0] = cp.position_mm
+        elif cp.axis == "y":
+            origin[1] = cp.position_mm
+        else:
+            origin[2] = cp.position_mm
+        suggested_planes.append(
+            SuggestedCutPlane(
+                normal=cp.normal,
+                origin=origin,
+                label=cp.label,
+                source="suggested_grid_fallback",
             )
+        )
 
-    # 5. Serializar planos para JSONB (inclui source)
+    # 4. Serializar e persistir
     cut_planes_json: list[dict] = [
-        {
-            "normal": cp.normal,
-            "origin": cp.origin,
-            "label": cp.label,
-            "source": cp.source,
-        }
+        {"normal": cp.normal, "origin": cp.origin, "label": cp.label, "source": cp.source}
         for cp in suggested_planes
     ]
 
-    # 6. Persistir split_session com status='draft'
     session = _create_split_session(
         supabase=supabase,
         model_id=payload.model_id,
@@ -198,30 +183,127 @@ async def plan_split_session(
         )
 
     logger.info(
-        "Split session criada: id=%s fits=%s planos=%d",
+        "Split session criada (grade): id=%s fits=%s planos=%d",
         session["id"], fits, len(suggested_planes),
     )
 
     return SplitSessionResponse(
         split_session_id=session["id"],
         fits=fits,
-        model_dimensions={
-            "x": model_dims.x,
-            "y": model_dims.y,
-            "z": model_dims.z,
-        },
+        model_dimensions={"x": model_dims.x, "y": model_dims.y, "z": model_dims.z},
         plate_dimensions=plate_dims_dict,
         cut_planes=[
-            CutPlaneOut(
-                normal=cp.normal,
-                origin=cp.origin,
-                label=cp.label,
-                source=cp.source,
-            )
+            CutPlaneOut(normal=cp.normal, origin=cp.origin, label=cp.label, source=cp.source)
             for cp in suggested_planes
         ],
     )
 
+
+# ---------------------------------------------------------------------------
+# POST /split-sessions/{id}/suggest — analise automatica de gargalos naturais
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/split-sessions/{session_id}/suggest",
+    response_model=SuggestResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Detectar gargalos naturais e atualizar planos de corte",
+    description=(
+        "Baixa a malha 3D, varre 18 direcoes com trimesh.section para detectar gargalos "
+        "anatomicos (pescoco, juncao de asas, cintura, tornozelos, etc.) e retorna o menor "
+        "conjunto de cortes que faz cada peca caber na mesa. Atualiza cut_planes no banco. "
+        "Pode levar 20-60s dependendo da complexidade do modelo."
+    ),
+)
+async def suggest_split_session(
+    session_id: str,
+    payload: SuggestRequest,
+    _auth: None = Depends(verify_internal_token),
+) -> SuggestResponse:
+    """Analise inteligente: gargalos naturais com fallback de grade por eixo."""
+    supabase = _get_supabase_client()
+
+    # 1. Buscar sessao de corte
+    try:
+        sess_result = (
+            supabase.table("split_sessions")
+            .select("id, model_id, build_plate_id, user_id")
+            .eq("id", session_id)
+            .eq("user_id", payload.user_id)
+            .single()
+            .execute()
+        )
+        session_row = sess_result.data
+    except Exception as exc:
+        logger.warning("Sessao nao encontrada: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sessao de corte nao encontrada.",
+        ) from exc
+
+    # 2. Buscar modelo e mesa
+    model = _fetch_model(supabase, session_row["model_id"], payload.user_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Modelo nao encontrado.")
+
+    plate = _fetch_build_plate(supabase, session_row["build_plate_id"], payload.user_id)
+    if plate is None:
+        raise HTTPException(status_code=404, detail="Mesa de trabalho nao encontrada.")
+
+    plate_dims_dict = {
+        "x": float(plate["build_volume_x_mm"]),
+        "y": float(plate["build_volume_y_mm"]),
+        "z": float(plate["build_volume_z_mm"]),
+    }
+
+    # 3. Baixar e normalizar malha
+    try:
+        download_url = create_download_url(supabase, model["storage_path"], expires_in=600)
+        tmp_path = await download_to_tempfile(download_url, model["storage_path"])
+        mesh = load_and_normalize(tmp_path)
+        bbox_center = mesh.bounds.mean(axis=0)
+        mesh.apply_translation(-bbox_center)
+    except Exception as exc:
+        logger.error("Falha ao baixar/carregar malha: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Nao foi possivel baixar o modelo para analise: {exc}",
+        ) from exc
+
+    # 4. Detectar gargalos naturais (18 direcoes)
+    logger.info("Iniciando suggest_cuts para sessao %s (18 direcoes)", session_id)
+    suggestion = suggest_cuts(mesh, plate_dims_dict)
+    logger.info(
+        "suggest_cuts concluido: fits=%s planos=%d",
+        suggestion.fits, len(suggestion.cut_planes),
+    )
+
+    # 5. Atualizar cut_planes no banco
+    cut_planes_json: list[dict] = [
+        {"normal": cp.normal, "origin": cp.origin, "label": cp.label, "source": cp.source}
+        for cp in suggestion.cut_planes
+    ]
+    try:
+        supabase.table("split_sessions").update(
+            {"cut_planes": cut_planes_json}
+        ).eq("id", session_id).execute()
+    except Exception as exc:
+        logger.warning("Falha ao atualizar cut_planes no banco: %s", exc)
+        # Nao falhar — retornar os planos mesmo assim
+
+    natural_count = sum(1 for cp in suggestion.cut_planes if cp.source == "suggested_natural")
+    grid_count = sum(1 for cp in suggestion.cut_planes if cp.source == "suggested_grid_fallback")
+
+    return SuggestResponse(
+        split_session_id=session_id,
+        cut_planes=[
+            CutPlaneOut(normal=cp.normal, origin=cp.origin, label=cp.label, source=cp.source)
+            for cp in suggestion.cut_planes
+        ],
+        natural_count=natural_count,
+        grid_count=grid_count,
+    )
 
 
 # ---------------------------------------------------------------------------
