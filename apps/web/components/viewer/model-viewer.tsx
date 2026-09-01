@@ -372,15 +372,25 @@ export function ModelViewer({
       });
 
       setCutPlanes(newPlanes);
-      setPieceBboxes([]);
       setSelectedPlaneId(null);
+
+      // Calcular imediatamente o status de fit das peças resultantes
+      // (sem esperar o usuário arrastar um plano)
+      if (modelPositionsRef.current && newPlanes.length > 0) {
+        const plate = buildPlates.find((p) => p.id === selectedPlateId) ?? null;
+        const bboxes = computePieceBboxes(modelPositionsRef.current, newPlanes, plate);
+        setPieceBboxes(bboxes);
+      } else {
+        setPieceBboxes([]);
+      }
+
       setSplitMode("planning");
     } catch (err) {
       // Não sai do modo planning — só mostra erro
       setSplitError(String(err));
       setSplitMode("planning");
     }
-  }, [sessionId]);
+  }, [sessionId, buildPlates, selectedPlateId]);
 
   const handleAddPlane = useCallback(() => {
     planeCounterRef.current += 1;
