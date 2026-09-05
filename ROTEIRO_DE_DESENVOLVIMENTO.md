@@ -215,6 +215,55 @@ Não implemente ainda a geração de encaixes (isso é a fase 7) nem nomeação 
 - [X] Download das peças funciona (arquivo por peça e/ou 3MF único com múltiplos objetos)
 - [ ] Execução do corte é bloqueada para usuários sem assinatura ativa, mas a simulação visual (manual e sugestões) continua liberada para todos
 
+## Fase 6.1 — Separar peças
+Depende da Fase 6 estar concluída (reaproveita a mesma tela de revisão de cortes e o mesmo endpoint de execução). Extração de esqueleto é mais pesada computacionalmente que a detecção de gargalos da Fase 6 — trate como job assíncrono desde o início, não como chamada síncrona.
+
+**Prompt sugerido:**
+```
+Leia a seção 6.4.1 do AGENTS.md do início ao fim antes de começar. Implemente:
+
+Backend (/apps/mesh-service):
+1. Adicione a biblioteca skeletor ao projeto. Implemente a extração de curve-skeleton (método
+   de contração de malha) para um model_id.
+2. Implemente a detecção de pontos de ramificação (grau >= 3) e extremidades (grau 1) no
+   esqueleto extraído. Para cada ramo entre uma ramificação e uma extremidade (ou entre duas
+   ramificações), calcule a posição/orientação do gargalo de conexão (trimesh.section
+   perpendicular à direção do esqueleto) e o volume aproximado do apêndice correspondente.
+3. Implemente o filtro por sensibilidade: descarte candidatos cujo volume relativo ao volume
+   total do objeto seja menor que o parâmetro `structural_sensitivity` recebido na requisição.
+4. Implemente esse endpoint como job assíncrono: retorne imediatamente um identificador e
+   atualize `split_sessions.status` para 'processing' enquanto processa; o resultado final
+   grava os planos em `cut_planes` com `"source": "suggested_structural"` e atualiza o status
+   para 'completed' (ou 'failed' com `error_message` em caso de erro).
+5. Depois da separação estrutural, encadeie a checagem de tamanho + sugestão de corte da seção
+   6.4 (passos 2-3) em cada peça resultante, adicionando cortes extras quando necessário.
+6. Preencha `pieces.structural_group` para permitir agrupar visualmente peças vindas do mesmo
+   apêndice original (rótulo interno genérico, não nomeação por IA).
+
+Frontend (/apps/web):
+7. Adicione o botão "Separar peças" na tela do modelo (disponível mesmo se o modelo já couber
+   na mesa de trabalho).
+8. Adicione o slider de sensibilidade (padrão sugerido: 7%), que dispara o endpoint da tarefa 4
+   e faz polling do status até o resultado ficar pronto, mostrando um indicador de carregamento
+   (a extração de esqueleto pode levar alguns segundos).
+9. Ao concluir, popule a tela de revisão de cortes já existente (Fase 6) com os planos
+   estruturais retornados, na mesma interface de aprovar/ajustar/remover/adicionar. O usuário
+   deve poder reajustar o slider e reprocessar quantas vezes quiser antes de confirmar.
+
+Escreva testes com pelo menos um modelo articulado (ex: figura humanoide ou animal com braços/
+pernas/cauda claramente distintos) validando que os apêndices esperados são detectados e que
+apêndices pequenos (dedos, orelhas) ficam de fora com a sensibilidade padrão.
+```
+
+Checklist de saída da fase:
+- [ ] Botão "Separar peças" funciona independente de o modelo já caber na mesa ou não
+- [ ] Esqueleto extraído corretamente identifica ramificações em pelo menos um modelo articulado de teste (braços, pernas, cauda etc.)
+- [ ] Slider de sensibilidade muda visivelmente o resultado (mais alto = menos peças separadas)
+- [ ] Apêndices pequenos (dedos, orelhas) não são separados com a sensibilidade padrão
+- [ ] Peças separadas que ainda não cabem na mesa recebem cortes adicionais automaticamente
+- [ ] Extração de esqueleto roda como job assíncrono, sem travar a interface
+- [ ] Todos os planos (estruturais + de ajuste de tamanho) aparecem juntos na tela de revisão
+
 ---
 
 ## Fase 7 — Encaixes automáticos + monetização + beta (≈3-4 semanas)

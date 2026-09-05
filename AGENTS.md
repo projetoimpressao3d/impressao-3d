@@ -31,6 +31,7 @@ deliberadamente para caber nos free tiers do Vercel, Supabase e Render durante a
 | API leve / CRUD | Next.js Route Handlers (Vercel Functions) — **nunca** rodar processamento de malha 3D aqui |
 | Backend pesado | Python 3.11+ com FastAPI, hospedado no Render |
 | Corte e reparo de malha | `manifold3d` (operações booleanas robustas) + `trimesh` (I/O, reparo, análise) |
+| Separação estrutural (esqueleto 3D) | `skeletor` (extração de curve-skeleton por contração de malha) |
 | Banco de dados / Auth / Storage | Supabase (Postgres + Supabase Auth + Supabase Storage) |
 | Geração 3D via IA (fase 2, não MVP) | Meshy AI API |
 | Assistente / sugestão de config. de impressão (fase 2, não MVP) | Claude API (Anthropic) |
@@ -56,6 +57,8 @@ desenvolvimento, mas o agente deve avisar o usuário quando a fase de monetizaç
 ⚠️ **Supabase Free pausa o projeto após 7 dias de inatividade.** Isso não afeta o código, mas
 pode afetar testes/demos — não é um bug se a API do Supabase parecer "fora do ar" após um
 período sem uso.
+
+⚠️ Operações longas (ex: extração de esqueleto da seção 6.4.1) devem ser assíncronas. Nunca faça o frontend esperar uma requisição síncrona travada para uma operação que pode demorar vários segundos — o backend deve responder imediatamente com um identificador de job/atualizar o status da sessão, e o frontend faz polling até o resultado ficar pronto.
 
 ## 4. Estrutura de repositórios
 
@@ -125,7 +128,8 @@ create table split_sessions (
   user_id uuid not null references auth.users(id),
   build_plate_id uuid not null references build_plates(id),
   status text not null default 'draft', -- 'draft' | 'processing' | 'completed' | 'failed'
-  cut_planes jsonb not null default '[]', -- [{ "position": [x,y,z], "normal": [x,y,z] }, ...]
+  cut_planes jsonb not null default '[]', -- [{ "position":[x,y,z], "normal":[x,y,z], "source": "suggested_natural" | "suggested_grid_fallback" | "suggested_structural" | "manual" }, ...]
+  structural_sensitivity numeric, -- ex: 0.07 (7%) — valor do slider usado na última separação estrutural (seção 6.4.1), null se nunca rodada
   has_connectors boolean not null default false,
   error_message text,
   created_at timestamptz not null default now(),
@@ -206,8 +210,23 @@ impressora"). Não implementar nenhuma lista de modelos comerciais de impressora
 **Decisão revisada: a v1 agora inclui sugestão automática de corte (detecção de pontos naturais/gargalos, seção acima) — isso substitui uma decisão anterior deste documento que previa só corte manual na v1. O usuário sempre revisa e aprova/ajusta cada sugestão antes da execução (passo 4); a ferramenta nunca corta sem confirmação.
 Não implementar nesta fase:
 - Segmentação por modelo de IA/visão computacional treinado (ex: rede neural de segmentação de malha) — a detecção de pontos de corte é 100% geometria/matemática (trimesh/numpy), não Machine Learning.
-- Extração de esqueleto (curve-skeleton) para seguir membros curvados/dobrados com mais precisão — a v1 escaneia por direções fixas (eixos principais + direções adicionais), o que cobre bem a maioria dos casos mas pode não achar o gargalo ideal em um membro muito dobrado. Fica como melhoria futura se necessário.
 - Nomeação automática de peças via IA (ex: "braço direito", "perna esquerda") no guia de montagem — por enquanto os rótulos ficam genéricos (Peça 1, Peça 2...). Decisão do usuário, pode ser revisitada depois do beta.
+
+### 6.4.1 Separar peças
+Objetivo: separar o objeto em suas partes estruturais (membros/apêndices), pela forma do objeto — não pelo tamanho. Diferente do fluxo da seção 6.4 (que só sugere corte quando o modelo não cabe na mesa), esta ação existe mesmo que o modelo já caiba, porque o critério aqui é estrutural: "isto é um braço/perna/apêndice", não "isto é grande demais". É uma ação que o usuário aciona deliberadamente (botão "Separar peças"), não roda automaticamente.
+
+Fluxo funcional:
+
+Usuário abre um modelo e clica em "Separar peças" (disponível mesmo que o modelo já caiba na mesa de trabalho selecionada).
+Frontend exibe um controle deslizante (slider) de "sensibilidade", com um valor padrão sugerido (ex: 7% do volume total do modelo). Esse valor controla o tamanho mínimo que um apêndice precisa ter, em relação ao volume total do objeto, para ser considerado uma peça separável — evita separar dedos, orelhas ou detalhes decorativos pequenos.
+Backend extrai o esqueleto do modelo (curve-skeleton, via biblioteca skeletor, usando o método de contração de malha) — um grafo simplificado que representa a "espinha dorsal" da forma, com nós e arestas.
+Identifica pontos de ramificação no esqueleto (nós com grau ≥ 3, onde vários ramos se encontram) e extremidades (grau 1, pontas soltas). Cada ramo entre uma ramificação e uma extremidade (ou entre duas ramificações) é um candidato a apêndice/peça separável.
+Para cada ramo candidato, calcula: a. A posição e orientação do "gargalo" onde ele se conecta ao resto do objeto — usando trimesh.section perpendicular à direção do esqueleto naquele ponto. Isso define o plano de corte candidato. b. O volume aproximado do apêndice, a partir dos vértices/faces da malha original associados àquele ramo do esqueleto.
+Filtra os candidatos pelo valor do slider (passo 2): só viram peça separável os apêndices cujo volume relativo ao volume total seja maior ou igual ao limiar escolhido pelo usuário. Os que ficarem abaixo continuam unidos ao corpo/peça pai. Ajustar o slider e reprocessar deve ser rápido o bastante para uma iteração interativa (poucos segundos).
+Cada plano de corte resultante é salvo com "source": "suggested_structural".
+Encadeamento com a seção 6.4: depois da separação estrutural, cada peça resultante passa pela checagem de tamanho contra a mesa de trabalho (seção 6.4). Se alguma ainda não couber, roda-se a sugestão de corte por gargalo/grade (seção 6.4) somente naquela peça, gerando cortes adicionais com "source": "suggested_natural" ou "suggested_grid_fallback".
+Todos os planos (estruturais + de ajuste de tamanho) aparecem juntos na mesma tela de revisão interativa já existente (seção 6.4) — o usuário aprova, ajusta, remove ou adiciona livremente, e pode reajustar o slider de sensibilidade e reprocessar a separação estrutural quantas vezes quiser antes de confirmar.
+Ao confirmar, segue o mesmo fluxo de execução já existente (seção 6.4).
 
 ### 6.5 Geração de modelo via IA (fase 2 — depois do MVP)
 Integração com a API da Meshy (text-to-3D e image-to-3D). Ver documentação oficial em

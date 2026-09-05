@@ -131,9 +131,12 @@ export interface CutPlaneData {
    * Origem do plano:
    * - "suggested_natural": detectado como gargalo anatômico por trimesh.section
    * - "suggested_grid_fallback": gerado por divisão em grade (sem gargalo natural)
+   * - "suggested_structural": detectado como apêndice estrutural via esqueleto 3D
    * - "manual": adicionado pelo usuário via "+ Adicionar plano"
    */
-  source: "suggested_natural" | "suggested_grid_fallback" | "manual";
+  source: "suggested_natural" | "suggested_grid_fallback" | "suggested_structural" | "manual";
+  /** Rótulo interno do apêndice de origem (ex: "branch-0"). Null para não-estruturais. */
+  structural_group?: string | null;
 }
 
 /** Status de fit de uma peça resultante do corte. */
@@ -190,4 +193,27 @@ export interface SuggestResponse {
   }>;
   natural_count: number;
   grid_count: number;
+}
+
+/** Resposta do POST /split-sessions/{id}/separate (inicia job assíncrono). */
+export interface SeparateResponse {
+  split_session_id: string;
+  status: "processing";
+}
+
+/** Resposta do GET /split-sessions/{id}/status (polling do job estrutural). */
+export interface StatusPollingResponse {
+  split_session_id: string;
+  status: "draft" | "processing" | "completed" | "failed";
+  cut_planes: Array<{
+    normal: number[];
+    origin: number[];
+    label: string;
+    source: "suggested_structural" | "suggested_natural" | "suggested_grid_fallback" | "manual";
+    structural_group?: string | null;
+  }>;
+  structural_count: number;
+  natural_count: number;
+  grid_count: number;
+  error_message?: string | null;
 }

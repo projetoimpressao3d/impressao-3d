@@ -1,11 +1,12 @@
 "use client";
 
-import type { BuildPlate, CutPlaneData, PieceBboxStatus, ExecutedPiece } from "@/types/database";
+import { useState } from "react";
+import type { BuildPlate, CutPlaneData, PieceBboxStatus } from "@/types/database";
 
 interface SplitPanelProps {
   // Sessão
   sessionId: string | null;
-  splitMode: "idle" | "loading" | "planning" | "suggesting" | "executing" | "done" | "error";
+  splitMode: "idle" | "loading" | "planning" | "suggesting" | "separating" | "executing" | "done" | "error";
   splitError: string | null;
 
   // Planos de corte
@@ -26,6 +27,7 @@ interface SplitPanelProps {
   // Callbacks
   onStartSplit: () => void;
   onAutoSuggest: () => void;
+  onSeparateParts: (sensitivity: number) => void;
   onAddPlane: () => void;
   onRemovePlane: (id: string) => void;
   onSelectPlane: (id: string | null) => void;
@@ -57,6 +59,7 @@ export function SplitPanel({
   hasSubscription,
   onStartSplit,
   onAutoSuggest,
+  onSeparateParts,
   onAddPlane,
   onRemovePlane,
   onSelectPlane,
@@ -67,27 +70,62 @@ export function SplitPanel({
 }: SplitPanelProps) {
   const selectedPlate = buildPlates.find((p) => p.id === selectedPlateId);
   const isSuggesting = splitMode === "suggesting";
+  const isSeparating = splitMode === "separating";
+
+  // Slider de sensibilidade (% do volume total mínimo para um apêndice ser separável)
+  const [sensitivity, setSensitivity] = useState<number>(7); // padrão 7%
 
   // ── Estado: idle ─────────────────────────────────────────────────────────
   if (splitMode === "idle") {
     return (
-      <div className="mt-4 flex items-center justify-between rounded-xl border border-gray-200 bg-white p-4">
-        <div>
-          <p className="text-sm font-medium text-gray-800">
-            ✂️ Dividir modelo em peças
-          </p>
-          <p className="mt-0.5 text-xs text-gray-500">
-            Selecione uma mesa de trabalho e clique para iniciar o planejamento
-            dos cortes.
-          </p>
+      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
+        {/* Título */}
+        <p className="text-sm font-medium text-gray-800">Ferramentas de divisão</p>
+        <p className="mt-0.5 text-xs text-gray-500">
+          Selecione uma mesa de trabalho e escolha como dividir o modelo.
+        </p>
+
+        {/* Dois botões lado a lado */}
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+          {/* Dividir Modelo */}
+          <button
+            onClick={onStartSplit}
+            disabled={!selectedPlateId || buildPlates.length === 0}
+            className="flex-1 rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            ✂️ Dividir Modelo
+          </button>
+
+          {/* Separar Peças */}
+          <div className="flex flex-1 flex-col gap-1.5">
+            <button
+              onClick={() => onSeparateParts(sensitivity / 100)}
+              disabled={!selectedPlateId || buildPlates.length === 0}
+              className="w-full rounded-lg border border-emerald-600 bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-700 shadow-sm transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              🦴 Separar Peças
+            </button>
+            {/* Slider de sensibilidade — visível junto ao botão Separar Peças */}
+            <div className="flex items-center gap-2 px-1">
+              <span className="text-xs text-gray-500 shrink-0">Sensibilidade:</span>
+              <input
+                type="range"
+                min={1}
+                max={30}
+                step={1}
+                value={sensitivity}
+                onChange={(e) => setSensitivity(Number(e.target.value))}
+                className="flex-1 accent-emerald-600"
+              />
+              <span className="w-9 text-right text-xs font-medium text-emerald-700 shrink-0">
+                {sensitivity}%
+              </span>
+            </div>
+            <p className="px-1 text-xs text-gray-400">
+              Apêndices com menos de {sensitivity}% do volume serão ignorados.
+            </p>
+          </div>
         </div>
-        <button
-          onClick={onStartSplit}
-          disabled={!selectedPlateId || buildPlates.length === 0}
-          className="ml-4 shrink-0 rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          Dividir modelo
-        </button>
       </div>
     );
   }
@@ -141,6 +179,37 @@ export function SplitPanel({
     );
   }
 
+  // ── Estado: separating (polling do job estrutural) ────────────────────────
+  if (splitMode === "separating") {
+    return (
+      <div className="mt-4 rounded-xl border border-emerald-100 bg-emerald-50 p-4">
+        <div className="flex items-center gap-3">
+          <div className="h-5 w-5 animate-spin rounded-full border-2 border-emerald-600 border-t-transparent" />
+          <p className="text-sm font-medium text-emerald-800">
+            Analisando estrutura do modelo…
+          </p>
+        </div>
+        <div className="mt-3 space-y-1.5 pl-8">
+          <p className="flex items-center gap-1.5 text-xs text-emerald-700">
+            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+            Extraindo esqueleto 3D (curve-skeleton)
+          </p>
+          <p className="flex items-center gap-1.5 text-xs text-emerald-700">
+            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400 [animation-delay:0.3s]" />
+            Detectando pontos de ramificação e apêndices
+          </p>
+          <p className="flex items-center gap-1.5 text-xs text-emerald-700">
+            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400 [animation-delay:0.6s]" />
+            Calculando planos de corte estruturais
+          </p>
+        </div>
+        <p className="mt-3 text-xs text-emerald-500">
+          Pode levar 15–60 s dependendo da complexidade. O resultado aparecerá automaticamente.
+        </p>
+      </div>
+    );
+  }
+
   // ── Estado: error ─────────────────────────────────────────────────────────
   if (splitMode === "error") {
     return (
@@ -168,7 +237,7 @@ export function SplitPanel({
     );
   }
 
-  // ── Estado: planning / suggesting ────────────────────────────────────────
+  // ── Estado: planning / suggesting / separating (após conclusão) ───────────
   if (splitMode === "planning" || splitMode === "suggesting") {
     const allFit =
       pieceBboxes.length > 0 && pieceBboxes.every((p) => p.fits);
@@ -334,6 +403,10 @@ export function SplitPanel({
           <div className="flex flex-wrap items-center gap-3 border-b border-gray-50 bg-gray-50 px-3 py-2">
             <span className="text-xs font-medium text-gray-400">Legenda:</span>
             <span className="flex items-center gap-1 text-xs text-gray-500">
+              <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
+              Separação estrutural
+            </span>
+            <span className="flex items-center gap-1 text-xs text-gray-500">
               <span className="inline-block h-2 w-2 rounded-full bg-violet-400" />
               Gargalo natural
             </span>
@@ -371,11 +444,13 @@ export function SplitPanel({
                       className={`h-2 w-2 shrink-0 rounded-full ${
                         selectedPlaneId === plane.id
                           ? "bg-amber-400"
-                          : plane.source === "suggested_natural"
-                            ? "bg-violet-400"
-                            : plane.source === "suggested_grid_fallback"
-                              ? "bg-amber-500"
-                              : "bg-gray-400"
+                          : plane.source === "suggested_structural"
+                            ? "bg-emerald-500"
+                            : plane.source === "suggested_natural"
+                              ? "bg-violet-400"
+                              : plane.source === "suggested_grid_fallback"
+                                ? "bg-amber-500"
+                                : "bg-gray-400"
                       }`}
                     />
                     <span className="text-sm text-gray-700">
@@ -383,6 +458,11 @@ export function SplitPanel({
                     </span>
 
                     {/* Badge por tipo de sugestão */}
+                    {plane.source === "suggested_structural" && (
+                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
+                        🦴 Separação estrutural
+                      </span>
+                    )}
                     {plane.source === "suggested_natural" && (
                       <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700">
                         🔬 Gargalo natural

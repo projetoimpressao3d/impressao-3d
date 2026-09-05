@@ -11,6 +11,7 @@ import type {
   PieceBboxStatus,
   PlanSessionResponse,
   SuggestResponse,
+  StatusPollingResponse,
 } from "@/types/database";
 import { ViewerOverlay } from "./viewer-overlay";
 import { SplitPanel } from "@/components/split/split-panel";
@@ -40,6 +41,7 @@ type SplitMode =
   | "loading"
   | "planning"
   | "suggesting"   // análise automática de gargalos em andamento
+  | "separating"   // separação estrutural por esqueleto (polling)
   | "executing"
   | "done"
   | "error";
@@ -392,6 +394,109 @@ export function ModelViewer({
     }
   }, [sessionId, buildPlates, selectedPlateId]);
 
+  /**
+   * Inicia a separação estrutural por esqueleto 3D.
+   * Cria uma nova sessão (se não existir), dispara o job assíncrono e
+   * faz polling a cada 2s até o resultado ficar pronto.
+   */
+  const handleSeparateParts = useCallback(async (sensitivity: number) => {
+    if (!selectedPlateId) return;
+    setSplitMode("separating");
+    setSplitError(null);
+
+    try {
+      // 1. Garantir que há uma sessão ativa — criar uma nova se necessário
+      let activeSessionId = sessionId;
+      if (!activeSessionId) {
+        const res = await fetch("/api/split-sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model_id: model.id, build_plate_id: selectedPlateId }),
+        });
+        if (!res.ok) {
+          const err = (await res.json()) as { detail?: string };
+          throw new Error(err.detail ?? `HTTP ${res.status}`);
+        }
+        const data = (await res.json()) as { split_session_id: string };
+        activeSessionId = data.split_session_id;
+        setSessionId(activeSessionId);
+      }
+
+      // 2. Disparar o job de separação estrutural
+      const sepRes = await fetch(`/api/split-sessions/${activeSessionId}/separate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ structural_sensitivity: sensitivity }),
+      });
+      if (!sepRes.ok) {
+        const err = (await sepRes.json()) as { detail?: string };
+        throw new Error(err.detail ?? `HTTP ${sepRes.status}`);
+      }
+
+      // 3. Polling a cada 2s até status = completed | failed
+      let attempts = 0;
+      const maxAttempts = 60; // 60 × 2s = 2 minutos máximo
+      const poll = async (): Promise<void> => {
+        if (attempts >= maxAttempts) {
+          throw new Error("Tempo limite excedido. Tente novamente.");
+        }
+        attempts++;
+
+        const statusRes = await fetch(
+          `/api/split-sessions/${activeSessionId}/status`,
+          { method: "GET" },
+        );
+        if (!statusRes.ok) throw new Error(`Polling falhou: HTTP ${statusRes.status}`);
+
+        const statusData = (await statusRes.json()) as StatusPollingResponse;
+
+        if (statusData.status === "completed") {
+          // Converter planos retornados → CutPlaneData com quaternion
+          const newPlanes: CutPlaneData[] = statusData.cut_planes.map((cp) => {
+            const q = quaternionFromNormal(cp.normal);
+            planeCounterRef.current += 1;
+            return {
+              id: `plane-${planeCounterRef.current}`,
+              px: cp.origin[0],
+              py: cp.origin[1],
+              pz: cp.origin[2],
+              ...q,
+              label: cp.label,
+              source: cp.source as CutPlaneData["source"],
+              structural_group: cp.structural_group ?? null,
+            };
+          });
+
+          setCutPlanes(newPlanes);
+          setSelectedPlaneId(null);
+
+          // Calcular bboxes imediatamente
+          if (modelPositionsRef.current && newPlanes.length > 0) {
+            const plate = buildPlates.find((p) => p.id === selectedPlateId) ?? null;
+            const bboxes = computePieceBboxes(modelPositionsRef.current, newPlanes, plate);
+            setPieceBboxes(bboxes);
+          } else {
+            setPieceBboxes([]);
+          }
+
+          setSplitMode("planning");
+        } else if (statusData.status === "failed") {
+          throw new Error(statusData.error_message ?? "Separação estrutural falhou.");
+        } else {
+          // Ainda processando — aguardar 2s e tentar novamente
+          await new Promise<void>((resolve) => setTimeout(resolve, 2000));
+          return poll();
+        }
+      };
+
+      await poll();
+    } catch (err) {
+      setSplitError(String(err));
+      // Se já há sessão, voltar para planning; senão, erro
+      setSplitMode(sessionId ? "planning" : "error");
+    }
+  }, [sessionId, model.id, selectedPlateId, buildPlates]);
+
   const handleAddPlane = useCallback(() => {
     planeCounterRef.current += 1;
     const newPlane: CutPlaneData = {
@@ -559,6 +664,7 @@ export function ModelViewer({
           hasSubscription={hasSubscription}
           onStartSplit={handleStartSplit}
           onAutoSuggest={handleAutoSuggest}
+          onSeparateParts={handleSeparateParts}
           onAddPlane={handleAddPlane}
           onRemovePlane={handleRemovePlane}
           onSelectPlane={setSelectedPlaneId}
