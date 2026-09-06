@@ -51,6 +51,31 @@ def _manifold_to_trimesh(m: Manifold) -> trimesh.Trimesh:
     return trimesh.Trimesh(vertices=verts, faces=faces, process=False)
 
 
+def _clean_piece_shards(piece: trimesh.Trimesh, min_volume: float = 150.0) -> trimesh.Trimesh:
+    """
+    Remove micro-estilhacos desconectados gerados por cortes de planos infinitos
+    em geometrias concavas distantes.
+    """
+    try:
+        comps = piece.split(only_watertight=False)
+        if len(comps) <= 1:
+            return piece
+
+        # Filtrar componentes significativos (volume >= min_volume ou faces >= 150)
+        significant = [
+            c for c in comps
+            if (c.is_watertight and abs(c.volume) >= min_volume) or len(c.faces) >= 150
+        ]
+        if not significant:
+            return piece
+        if len(significant) == 1:
+            return significant[0]
+        return trimesh.util.concatenate(significant)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Falha ao filtrar estilhacos da peca: %s", exc)
+        return piece
+
+
 def cut_mesh_by_planes(
     mesh: trimesh.Trimesh,
     planes: list[CutPlaneInput],
@@ -121,7 +146,7 @@ def cut_mesh_by_planes(
 
     accumulated.append(current)  # último fragmento: bottom do plano final
 
-    # Converter manifolds → trimesh, descartando peças vazias
+    # Converter manifolds → trimesh, descartando peças vazias e limpando estilhaços
     result: list[trimesh.Trimesh] = []
     for i, m in enumerate(accumulated):
         try:
@@ -134,6 +159,8 @@ def cut_mesh_by_planes(
         if len(piece.vertices) == 0 or len(piece.faces) == 0:
             logger.warning("Peça %d ficou vazia após o corte — descartada", i)
             continue
+
+        piece = _clean_piece_shards(piece)
 
         result.append(piece)
         logger.info(

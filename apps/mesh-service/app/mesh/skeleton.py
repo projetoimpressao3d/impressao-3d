@@ -174,8 +174,13 @@ def _estimate_appendage_volume(
     mesh: trimesh.Trimesh,
     cut_origin: np.ndarray,
     cut_normal: np.ndarray,
+    branch_pts: np.ndarray | None = None,
 ) -> float:
-    """Estima o volume do apendice no lado positivo do plano de corte."""
+    """
+    Estima o volume do apendice associado ao ramo no lado positivo do corte.
+    Isola o componente conexo associado aos pontos do ramo para evitar que
+    o plano infinito conte partes distantes da geometria.
+    """
     try:
         dots = (mesh.vertices - cut_origin) @ cut_normal
         face_dots = dots[mesh.faces]
@@ -183,8 +188,32 @@ def _estimate_appendage_volume(
         n_appendage_faces = appendage_mask.sum()
         if n_appendage_faces == 0:
             return 0.0
-        volume_ratio = n_appendage_faces / len(mesh.faces)
+
         total_volume = abs(float(mesh.volume)) if mesh.volume is not None else 1.0
+
+        # Se temos pontos do ramo e a mascara nao engloba a malha inteira,
+        # isolar o componente conexo real do apendice
+        if branch_pts is not None and len(branch_pts) > 0 and n_appendage_faces < len(mesh.faces):
+            try:
+                submesh = mesh.submesh([appendage_mask], append=True)
+                comps = submesh.split(only_watertight=False)
+                if comps:
+                    best_comp = None
+                    min_d = float("inf")
+                    for comp in comps:
+                        comp_center = comp.bounding_box.centroid
+                        d = float(np.min(np.linalg.norm(branch_pts - comp_center, axis=1)))
+                        if d < min_d:
+                            min_d = d
+                            best_comp = comp
+                    if best_comp is not None:
+                        if best_comp.is_watertight and best_comp.volume is not None:
+                            return abs(float(best_comp.volume))
+                        return (len(best_comp.faces) / len(mesh.faces)) * total_volume
+            except Exception:
+                pass
+
+        volume_ratio = n_appendage_faces / len(mesh.faces)
         return volume_ratio * total_volume
     except Exception:  # noqa: BLE001
         return 0.0
@@ -210,12 +239,21 @@ def find_structural_candidates(
     if total_volume < 1e-9:
         total_volume = 1.0
 
-    candidates: list[StructuralCutPlane] = []
+    raw_candidates: list[dict[str, Any]] = []
 
     for i, branch_path in enumerate(branches):
         starts_at_branch = branch_path[0] in set(branch_nodes)
         ends_at_endpoint = branch_path[-1] in set(endpoints)
-        if not (starts_at_branch and ends_at_endpoint):
+        ends_at_branch = branch_path[-1] in set(branch_nodes)
+
+        # Secao 6.4.1: ramos entre ramificacao e extremidade ou entre duas ramificacoes
+        if not (starts_at_branch and (ends_at_endpoint or ends_at_branch)):
+            continue
+
+        b_pts = skel_vertices[branch_path]
+        length = float(np.sum(np.linalg.norm(np.diff(b_pts, axis=0), axis=1)))
+        # Ignorar micro-ramificacoes espurias com menos de 10mm de comprimento
+        if length < 10.0 and ends_at_branch:
             continue
 
         result = _compute_branch_cut_plane(mesh, branch_path, skel_vertices)
@@ -226,8 +264,16 @@ def find_structural_candidates(
         normal_arr = np.array(normal_list)
         origin_arr = np.array(origin_list)
 
-        appendage_vol = _estimate_appendage_volume(mesh, origin_arr, normal_arr)
+        appendage_vol = _estimate_appendage_volume(mesh, origin_arr, normal_arr, branch_pts=b_pts)
         ratio = appendage_vol / total_volume
+
+        # Um apendice e por definicao <= 50% do volume do modelo.
+        # Se ratio > 0.50, a normal esta apontando para o tronco; invertemos para apontar para o apendice.
+        if ratio > 0.50:
+            normal_arr = -normal_arr
+            normal_list = normal_arr.tolist()
+            appendage_vol = _estimate_appendage_volume(mesh, origin_arr, normal_arr, branch_pts=b_pts)
+            ratio = appendage_vol / total_volume
 
         logger.debug("Ramo %d: volume_ratio=%.3f, sensitivity=%.3f", i, ratio, sensitivity)
 
@@ -235,19 +281,46 @@ def find_structural_candidates(
             logger.debug("Ramo %d descartado (abaixo do limiar)", i)
             continue
 
-        label_num = len(candidates) + 1
+        raw_candidates.append({
+            "normal": normal_list,
+            "origin": origin_list,
+            "structural_group": f"branch-{i}",
+            "volume_ratio": round(ratio, 4),
+        })
+
+    # Ordenar candidatos pelo volume relativo decrescente
+    raw_candidates.sort(key=lambda c: c["volume_ratio"], reverse=True)
+
+    # Agrupar / desduplicar candidatos muito proximos (mesmo apendice)
+    clustered: list[dict[str, Any]] = []
+    for rc in raw_candidates:
+        orig = np.array(rc["origin"])
+        norm = np.array(rc["normal"])
+        duplicate = False
+        for ex in clustered:
+            e_orig = np.array(ex["origin"])
+            e_norm = np.array(ex["normal"])
+            dist = float(np.linalg.norm(orig - e_orig))
+            cos_ang = abs(float(np.dot(norm, e_norm)))
+            if dist < 25.0 and cos_ang > 0.6:
+                duplicate = True
+                break
+        if not duplicate:
+            clustered.append(rc)
+
+    candidates: list[StructuralCutPlane] = []
+    for idx, c in enumerate(clustered):
         candidates.append(
             StructuralCutPlane(
-                normal=normal_list,
-                origin=origin_list,
-                label=f"Ramo {label_num}",
+                normal=c["normal"],
+                origin=c["origin"],
+                label=f"Ramo {idx + 1}",
                 source="suggested_structural",
-                structural_group=f"branch-{i}",
-                appendage_volume_ratio=round(ratio, 4),
+                structural_group=c["structural_group"],
+                appendage_volume_ratio=c["volume_ratio"],
             )
         )
 
-    candidates.sort(key=lambda c: c.appendage_volume_ratio, reverse=True)
     logger.info("find_structural_candidates: %d candidatos aprovados", len(candidates))
     return candidates
 
