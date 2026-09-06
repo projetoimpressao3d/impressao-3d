@@ -179,12 +179,17 @@ function computePieceBboxes(
       y: maxs[i][1] - mins[i][1],
       z: maxs[i][2] - mins[i][2],
     };
+    const center = {
+      x: (maxs[i][0] + mins[i][0]) / 2,
+      y: (maxs[i][1] + mins[i][1]) / 2,
+      z: (maxs[i][2] + mins[i][2]) / 2,
+    };
     const fits = plate
       ? bbox.x <= plate.build_volume_x_mm &&
         bbox.y <= plate.build_volume_y_mm &&
         bbox.z <= plate.build_volume_z_mm
       : true;
-    bboxes[i] = { pieceIndex: i, bbox, fits };
+    bboxes[i] = { pieceIndex: i, bbox, center, minY: mins[i][1], fits };
   }
 
   return bboxes;
@@ -222,6 +227,12 @@ export function ModelViewer({
 
   // ── Status das peças (calculado no drag-end) ──────────────────────────
   const [pieceBboxes, setPieceBboxes] = useState<PieceBboxStatus[]>([]);
+
+  // ── Modo de visualização: "editor" (ajuste de planos) ou "preview" (peças nas mesas) ─
+  const [activeView, setActiveView] = useState<"editor" | "preview">("editor");
+
+  // ── Mensagem explicativa quando nenhum corte é gerado ────────────────
+  const [separateFeedback, setSeparateFeedback] = useState<string | null>(null);
 
   // ── Peças executadas (download) ───────────────────────────────────────
   const [executedPieces, setExecutedPieces] = useState<ExecutedPiece[]>([]);
@@ -382,8 +393,10 @@ export function ModelViewer({
         const plate = buildPlates.find((p) => p.id === selectedPlateId) ?? null;
         const bboxes = computePieceBboxes(modelPositionsRef.current, newPlanes, plate);
         setPieceBboxes(bboxes);
+        setActiveView("preview");
       } else {
         setPieceBboxes([]);
+        setActiveView("editor");
       }
 
       setSplitMode("planning");
@@ -475,8 +488,16 @@ export function ModelViewer({
             const plate = buildPlates.find((p) => p.id === selectedPlateId) ?? null;
             const bboxes = computePieceBboxes(modelPositionsRef.current, newPlanes, plate);
             setPieceBboxes(bboxes);
+            setSeparateFeedback(null);
+            // Mostrar graficamente as peças separadas nas mesas de trabalho
+            setActiveView("preview");
           } else {
             setPieceBboxes([]);
+            setSeparateFeedback(
+              `Nenhum apêndice atingiu o limiar de ${(sensitivity * 100).toFixed(0)}% do volume total. ` +
+              `Dica: reduza o controle de sensibilidade (ex: 3% ou 5%) para identificar apêndices mais finos como asas, caudas ou chifres, e clique novamente em "Separar Peças".`
+            );
+            setActiveView("editor");
           }
 
           setSplitMode("planning");
@@ -588,6 +609,8 @@ export function ModelViewer({
     setPieceBboxes([]);
     setSessionId(null);
     setSplitError(null);
+    setActiveView("editor");
+    setSeparateFeedback(null);
   }, []);
 
   // ── Renderização ──────────────────────────────────────────────────────
@@ -601,11 +624,40 @@ export function ModelViewer({
   }
 
   const isInSplitMode =
-    splitMode === "planning" || splitMode === "executing";
+    splitMode === "planning" ||
+    splitMode === "suggesting" ||
+    splitMode === "separating" ||
+    splitMode === "executing";
 
   return (
     <div>
-      <div className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900 shadow-lg">
+      <div className="relative overflow-hidden rounded-xl border border-gray-800 bg-gray-900 shadow-lg">
+        {/* Toggle flutuante de visualização rápida no topo do canvas */}
+        {isInSplitMode && cutPlanes.length > 0 && (
+          <div className="absolute top-3 left-3 z-10 flex items-center gap-1 rounded-lg border border-gray-700/80 bg-gray-900/85 p-1 shadow-lg backdrop-blur-md">
+            <button
+              onClick={() => setActiveView("editor")}
+              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition ${
+                activeView === "editor"
+                  ? "bg-violet-600 text-white shadow-sm"
+                  : "text-gray-300 hover:bg-gray-800 hover:text-white"
+              }`}
+            >
+              ✏️ Editar Cortes
+            </button>
+            <button
+              onClick={() => setActiveView("preview")}
+              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition ${
+                activeView === "preview"
+                  ? "bg-emerald-600 text-white shadow-sm"
+                  : "text-gray-300 hover:bg-gray-800 hover:text-white"
+              }`}
+            >
+              🧩 Peças nas Mesas ({cutPlanes.length + 1})
+            </button>
+          </div>
+        )}
+
         {/* Canvas 3D */}
         <div style={{ height: 520 }}>
           {signedUrl ? (
@@ -615,7 +667,9 @@ export function ModelViewer({
               selectedPlate={selectedPlate}
               onBboxChange={handleBboxChange}
               splitMode={isInSplitMode}
+              activeView={activeView}
               cutPlanes={cutPlanes}
+              pieceBboxes={pieceBboxes}
               selectedPlaneId={selectedPlaneId}
               transformMode={transformMode}
               onSelectPlane={setSelectedPlaneId}
@@ -662,6 +716,9 @@ export function ModelViewer({
           buildPlates={buildPlates}
           selectedPlateId={selectedPlateId}
           hasSubscription={hasSubscription}
+          activeView={activeView}
+          onViewChange={setActiveView}
+          separateFeedback={separateFeedback}
           onStartSplit={handleStartSplit}
           onAutoSuggest={handleAutoSuggest}
           onSeparateParts={handleSeparateParts}

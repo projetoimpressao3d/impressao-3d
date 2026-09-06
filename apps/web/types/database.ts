@@ -144,6 +144,10 @@ export interface PieceBboxStatus {
   pieceIndex: number;
   /** Dimensões em mm (da bounding box, após corte — aproximadas por filtragem de vértices). */
   bbox: { x: number; y: number; z: number } | null;
+  /** Centro da bounding box da peça no espaço local centrado. */
+  center?: { x: number; y: number; z: number } | null;
+  /** Coordenada Y mínima da peça (base para repousar sobre a mesa). */
+  minY?: number | null;
   fits: boolean;
 }
 

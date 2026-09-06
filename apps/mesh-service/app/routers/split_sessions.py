@@ -484,13 +484,10 @@ async def execute_split(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Sessão de corte não encontrada ou não pertence a este usuário.",
         )
-    if session.get("status") not in ("draft", "failed"):
+    if session.get("status") == "processing":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"A sessão não pode ser executada com status '{session['status']}'. "
-                "Apenas sessões 'draft' ou 'failed' podem ser executadas."
-            ),
+            detail="A sessão já está sendo processada. Aguarde a conclusão.",
         )
 
     # 3. Marcar como em processamento

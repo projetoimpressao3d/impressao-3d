@@ -4,11 +4,12 @@ import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { Suspense } from "react";
 import type * as THREE from "three";
-import type { BuildPlate, CutPlaneData } from "@/types/database";
+import type { BuildPlate, CutPlaneData, PieceBboxStatus } from "@/types/database";
 import { STLMesh } from "./stl-mesh";
 import { ThreeMFObject } from "./threemf-object";
 import { BuildPlateBox } from "./build-plate-box";
 import { SplitEditor } from "./split-editor";
+import { PiecesPreviewScene } from "./pieces-preview-scene";
 
 interface ViewerSceneProps {
   url: string;
@@ -17,7 +18,9 @@ interface ViewerSceneProps {
   onBboxChange: (bbox: THREE.Box3) => void;
   // Props do modo de edição de cortes (opcionais)
   splitMode?: boolean;
+  activeView?: "editor" | "preview";
   cutPlanes?: CutPlaneData[];
+  pieceBboxes?: PieceBboxStatus[];
   selectedPlaneId?: string | null;
   transformMode?: "translate" | "rotate";
   onSelectPlane?: (id: string | null) => void;
@@ -48,7 +51,9 @@ export function ViewerScene({
   selectedPlate,
   onBboxChange,
   splitMode = false,
+  activeView = "editor",
   cutPlanes = [],
+  pieceBboxes = [],
   selectedPlaneId = null,
   transformMode = "translate",
   onSelectPlane,
@@ -79,20 +84,31 @@ export function ViewerScene({
 
       <Suspense fallback={null}>
         {splitMode ? (
-          /* Modo de edição de cortes — SplitEditor gerencia todo o conteúdo da cena */
-          <SplitEditor
-            url={url}
-            format={format}
-            selectedPlate={selectedPlate}
-            cutPlanes={cutPlanes}
-            selectedPlaneId={selectedPlaneId}
-            transformMode={transformMode}
-            onBboxChange={onBboxChange}
-            onSelectPlane={onSelectPlane ?? (() => {})}
-            onCutPlaneMoved={onCutPlaneMoved ?? (() => {})}
-            onDragEnd={onDragEnd ?? (() => {})}
-            onGeometryReady={onGeometryReady ?? (() => {})}
-          />
+          activeView === "preview" && cutPlanes.length > 0 ? (
+            /* Prévia gráfica das peças cortadas dispostas nas mesas de trabalho */
+            <PiecesPreviewScene
+              url={url}
+              format={format}
+              selectedPlate={selectedPlate}
+              cutPlanes={cutPlanes}
+              pieceBboxes={pieceBboxes}
+            />
+          ) : (
+            /* Modo de edição de cortes — SplitEditor gerencia planos e TransformControls */
+            <SplitEditor
+              url={url}
+              format={format}
+              selectedPlate={selectedPlate}
+              cutPlanes={cutPlanes}
+              selectedPlaneId={selectedPlaneId}
+              transformMode={transformMode}
+              onBboxChange={onBboxChange}
+              onSelectPlane={onSelectPlane ?? (() => {})}
+              onCutPlaneMoved={onCutPlaneMoved ?? (() => {})}
+              onDragEnd={onDragEnd ?? (() => {})}
+              onGeometryReady={onGeometryReady ?? (() => {})}
+            />
+          )
         ) : (
           /* Modo de visualização normal */
           <>

@@ -24,6 +24,11 @@ interface SplitPanelProps {
   // Assinatura
   hasSubscription: boolean;
 
+  // Visualização e Prévia
+  activeView?: "editor" | "preview";
+  onViewChange?: (view: "editor" | "preview") => void;
+  separateFeedback?: string | null;
+
   // Callbacks
   onStartSplit: () => void;
   onAutoSuggest: () => void;
@@ -57,6 +62,9 @@ export function SplitPanel({
   buildPlates,
   selectedPlateId,
   hasSubscription,
+  activeView = "editor",
+  onViewChange,
+  separateFeedback,
   onStartSplit,
   onAutoSuggest,
   onSeparateParts,
@@ -73,57 +81,76 @@ export function SplitPanel({
   const isSeparating = splitMode === "separating";
 
   // Slider de sensibilidade (% do volume total mínimo para um apêndice ser separável)
-  const [sensitivity, setSensitivity] = useState<number>(7); // padrão 7%
+  const [sensitivity, setSensitivity] = useState<number>(5); // padrão 5% (ideal para asas, caudas e membros)
 
   // ── Estado: idle ─────────────────────────────────────────────────────────
   if (splitMode === "idle") {
     return (
-      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
-        {/* Título */}
-        <p className="text-sm font-medium text-gray-800">Ferramentas de divisão</p>
-        <p className="mt-0.5 text-xs text-gray-500">
-          Selecione uma mesa de trabalho e escolha como dividir o modelo.
-        </p>
-
-        {/* Dois botões lado a lado */}
-        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-          {/* Dividir Modelo */}
-          <button
-            onClick={onStartSplit}
-            disabled={!selectedPlateId || buildPlates.length === 0}
-            className="flex-1 rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            ✂️ Dividir Modelo
-          </button>
-
-          {/* Separar Peças */}
-          <div className="flex flex-1 flex-col gap-1.5">
-            <button
-              onClick={() => onSeparateParts(sensitivity / 100)}
-              disabled={!selectedPlateId || buildPlates.length === 0}
-              className="w-full rounded-lg border border-emerald-600 bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-700 shadow-sm transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              🦴 Separar Peças
-            </button>
-            {/* Slider de sensibilidade — visível junto ao botão Separar Peças */}
-            <div className="flex items-center gap-2 px-1">
-              <span className="text-xs text-gray-500 shrink-0">Sensibilidade:</span>
-              <input
-                type="range"
-                min={1}
-                max={30}
-                step={1}
-                value={sensitivity}
-                onChange={(e) => setSensitivity(Number(e.target.value))}
-                className="flex-1 accent-emerald-600"
-              />
-              <span className="w-9 text-right text-xs font-medium text-emerald-700 shrink-0">
-                {sensitivity}%
-              </span>
+      <div className="mt-4 space-y-3">
+        {/* Banner de feedback caso a separação anterior não tenha achado apêndices */}
+        {separateFeedback && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3.5">
+            <div className="flex items-start gap-2.5">
+              <span className="text-base">💡</span>
+              <div>
+                <p className="text-xs font-semibold text-amber-800">
+                  Dica de ajuste de sensibilidade
+                </p>
+                <p className="mt-0.5 text-xs text-amber-700 leading-relaxed">
+                  {separateFeedback}
+                </p>
+              </div>
             </div>
-            <p className="px-1 text-xs text-gray-400">
-              Apêndices com menos de {sensitivity}% do volume serão ignorados.
-            </p>
+          </div>
+        )}
+
+        <div className="rounded-xl border border-gray-200 bg-white p-4">
+          {/* Título */}
+          <p className="text-sm font-medium text-gray-800">Ferramentas de divisão</p>
+          <p className="mt-0.5 text-xs text-gray-500">
+            Selecione uma mesa de trabalho e escolha como dividir o modelo.
+          </p>
+
+          {/* Dois botões lado a lado */}
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            {/* Dividir Modelo */}
+            <button
+              onClick={onStartSplit}
+              disabled={!selectedPlateId || buildPlates.length === 0}
+              className="flex-1 rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              ✂️ Dividir Modelo
+            </button>
+
+            {/* Separar Peças */}
+            <div className="flex flex-1 flex-col gap-1.5">
+              <button
+                onClick={() => onSeparateParts(sensitivity / 100)}
+                disabled={!selectedPlateId || buildPlates.length === 0}
+                className="w-full rounded-lg border border-emerald-600 bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-700 shadow-sm transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                🦴 Separar Peças
+              </button>
+              {/* Slider de sensibilidade — visível junto ao botão Separar Peças */}
+              <div className="flex items-center gap-2 px-1">
+                <span className="text-xs text-gray-500 shrink-0">Sensibilidade:</span>
+                <input
+                  type="range"
+                  min={1}
+                  max={30}
+                  step={1}
+                  value={sensitivity}
+                  onChange={(e) => setSensitivity(Number(e.target.value))}
+                  className="flex-1 accent-emerald-600"
+                />
+                <span className="w-9 text-right text-xs font-medium text-emerald-700 shrink-0">
+                  {sensitivity}%
+                </span>
+              </div>
+              <p className="px-1 text-xs text-gray-400">
+                Apêndices com menos de {sensitivity}% do volume serão ignorados.
+              </p>
+            </div>
           </div>
         </div>
       </div>
@@ -252,21 +279,58 @@ export function SplitPanel({
 
     return (
       <div className="mt-4 space-y-3">
-        {/* Cabeçalho com botões de modo */}
-        <div className="flex items-center justify-between rounded-xl border border-gray-200 bg-white p-3">
+        {/* Banner de feedback caso a separação anterior não tenha achado apêndices */}
+        {separateFeedback && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3.5">
+            <div className="flex items-start gap-2.5">
+              <span className="text-base">💡</span>
+              <div>
+                <p className="text-xs font-semibold text-amber-800">
+                  Dica de ajuste de sensibilidade
+                </p>
+                <p className="mt-0.5 text-xs text-amber-700 leading-relaxed">
+                  {separateFeedback}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Cabeçalho com abas de visualização e botões de modo */}
+        <div className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
+          {/* Abas: Modo Edição vs Prévia das Peças Separadas */}
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-medium text-gray-800">
-              ✂️ Editor de cortes
-            </span>
+            <div className="flex items-center rounded-lg bg-gray-100 p-0.5">
+              <button
+                onClick={() => onViewChange?.("editor")}
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                  activeView === "editor"
+                    ? "bg-white text-gray-900 shadow-sm"
+                    : "text-gray-500 hover:text-gray-900"
+                }`}
+              >
+                ✏️ Editar Cortes
+              </button>
+              <button
+                onClick={() => onViewChange?.("preview")}
+                disabled={cutPlanes.length === 0}
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                  activeView === "preview"
+                    ? "bg-emerald-600 text-white shadow-sm"
+                    : "text-gray-500 hover:text-gray-900 disabled:opacity-40 disabled:cursor-not-allowed"
+                }`}
+              >
+                🧩 Peças nas Mesas ({cutPlanes.length + 1})
+              </button>
+            </div>
+
             {selectedPlate && (
-              <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-500">
-                Mesa: {selectedPlate.name} (
-                {selectedPlate.build_volume_x_mm}×
-                {selectedPlate.build_volume_y_mm}×
-                {selectedPlate.build_volume_z_mm} mm)
+              <span className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-500">
+                Mesa: {selectedPlate.name} ({selectedPlate.build_volume_x_mm}×{selectedPlate.build_volume_y_mm}×{selectedPlate.build_volume_z_mm} mm)
               </span>
             )}
           </div>
+
           <div className="flex items-center gap-2 shrink-0">
             {/* Botão de análise automática */}
             <button
