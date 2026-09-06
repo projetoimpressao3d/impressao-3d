@@ -13,3 +13,4 @@ supabase>=2.9.0
 skeletor>=1.4.0
 networkx>=3.0
 scipy>=1.11.0
+fast_simplification>=0.2.0

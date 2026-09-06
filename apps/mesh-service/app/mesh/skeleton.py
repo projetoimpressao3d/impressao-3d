@@ -22,7 +22,7 @@ import trimesh
 logger = logging.getLogger(__name__)
 
 DEFAULT_SENSITIVITY: float = 0.07
-_MAX_VERTICES_BEFORE_SIMPLIFY: int = 50_000
+_MAX_FACES_BEFORE_SIMPLIFY: int = 50_000
 
 
 @dataclass
@@ -58,10 +58,17 @@ def extract_skeleton(mesh: trimesh.Trimesh) -> Any:
 
     fixed = sk.pre.fix_mesh(mesh, remove_disconnected=5, inplace=False)
 
-    if len(fixed.vertices) > _MAX_VERTICES_BEFORE_SIMPLIFY:
-        target_ratio = _MAX_VERTICES_BEFORE_SIMPLIFY / len(fixed.vertices)
-        fixed = sk.pre.simplify(fixed, ratio=target_ratio)
-        logger.info("Malha simplificada para %d vertices", len(fixed.vertices))
+    # Simplificar malhas densas para acelerar o cálculo do esqueleto sem depender do Blender
+    if len(fixed.faces) > _MAX_FACES_BEFORE_SIMPLIFY:
+        try:
+            fixed = fixed.simplify_quadric_decimation(face_count=_MAX_FACES_BEFORE_SIMPLIFY)
+            logger.info(
+                "Malha simplificada para %d faces (%d vertices)",
+                len(fixed.faces),
+                len(fixed.vertices),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Simplificacao falhou (%s), continuando com malha original", exc)
 
     try:
         contracted = sk.pre.contract(fixed, epsilon=0.1, iter_lim=10)
