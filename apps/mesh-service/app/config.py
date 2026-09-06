@@ -7,9 +7,10 @@ class Settings(BaseSettings):
     """Configurações carregadas do arquivo .env ou variáveis de ambiente."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", "apps/mesh-service/.env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
     # Supabase
