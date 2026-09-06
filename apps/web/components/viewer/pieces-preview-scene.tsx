@@ -4,6 +4,7 @@ import { useMemo, useEffect } from "react";
 import { useLoader, useThree } from "@react-three/fiber";
 import { OrbitControls, Html } from "@react-three/drei";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
+import { ThreeMFLoader } from "three/examples/jsm/loaders/3MFLoader.js";
 import * as THREE from "three";
 import type { BuildPlate, CutPlaneData, PieceBboxStatus } from "@/types/database";
 import { BuildPlateBox } from "./build-plate-box";
@@ -67,22 +68,18 @@ function getClippingPlanesForPiece(
   return planes;
 }
 
-export function PiecesPreviewScene({
+function STLPreviewPiece({
   url,
-  selectedPlate,
-  cutPlanes,
-  pieceBboxes,
-}: PiecesPreviewSceneProps) {
-  const { gl } = useThree();
+  translation,
+  clippingPlanes,
+  color,
+}: {
+  url: string;
+  translation: THREE.Vector3;
+  clippingPlanes: THREE.Plane[];
+  color: string;
+}) {
   const rawGeometry = useLoader(STLLoader, url);
-
-  useEffect(() => {
-    gl.localClippingEnabled = true;
-    return () => {
-      gl.localClippingEnabled = false;
-    };
-  }, [gl]);
-
   const geometry = useMemo(() => {
     const geo = rawGeometry.clone();
     geo.computeBoundingBox();
@@ -90,6 +87,84 @@ export function PiecesPreviewScene({
     geo.computeVertexNormals();
     return geo;
   }, [rawGeometry]);
+
+  return (
+    <mesh geometry={geometry} position={translation} castShadow receiveShadow>
+      <meshStandardMaterial
+        color={color}
+        roughness={0.4}
+        metalness={0.15}
+        side={THREE.DoubleSide}
+        clippingPlanes={clippingPlanes}
+        clipShadows
+      />
+    </mesh>
+  );
+}
+
+function ThreeMFPreviewPiece({
+  url,
+  translation,
+  clippingPlanes,
+  color,
+}: {
+  url: string;
+  translation: THREE.Vector3;
+  clippingPlanes: THREE.Plane[];
+  color: string;
+}) {
+  const rawGroup = useLoader(
+    ThreeMFLoader as unknown as typeof THREE.ObjectLoader,
+    url,
+  ) as unknown as THREE.Group;
+
+  const pieceGroup = useMemo(() => {
+    const g = rawGroup.clone(true);
+    const bbox = new THREE.Box3().setFromObject(g);
+    const center = new THREE.Vector3();
+    bbox.getCenter(center);
+    g.position.sub(center);
+
+    g.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        child.material = new THREE.MeshStandardMaterial({
+          color,
+          roughness: 0.4,
+          metalness: 0.15,
+          side: THREE.DoubleSide,
+          clippingPlanes,
+          clipShadows: true,
+        });
+        child.castShadow = true;
+        child.receiveShadow = true;
+      }
+    });
+
+    return g;
+  }, [rawGroup, color, clippingPlanes]);
+
+  return (
+    <group position={translation}>
+      <primitive object={pieceGroup} />
+    </group>
+  );
+}
+
+export function PiecesPreviewScene({
+  url,
+  format,
+  selectedPlate,
+  cutPlanes,
+  pieceBboxes,
+}: PiecesPreviewSceneProps) {
+  const { gl } = useThree();
+
+  useEffect(() => {
+    gl.localClippingEnabled = true;
+    return () => {
+      gl.localClippingEnabled = false;
+    };
+  }, [gl]);
 
   const numPieces = cutPlanes.length + 1;
   const plateX = selectedPlate?.build_volume_x_mm ?? 200;
@@ -176,28 +251,27 @@ export function PiecesPreviewScene({
 
         return (
           <group key={`preview-piece-${i}`}>
-            {/* Mesa de trabalho dedicada para esta peça */}
             {selectedPlate && (
               <group position={[layout.plateCenterX, 0, layout.plateCenterZ]}>
                 <BuildPlateBox plate={selectedPlate} />
               </group>
             )}
 
-            <mesh
-              geometry={geometry}
-              position={layout.translation}
-              castShadow
-              receiveShadow
-            >
-              <meshStandardMaterial
-                color={color}
-                roughness={0.4}
-                metalness={0.15}
-                side={THREE.DoubleSide}
+            {format === "3mf" ? (
+              <ThreeMFPreviewPiece
+                url={url}
+                translation={layout.translation}
                 clippingPlanes={layout.clippingPlanes}
-                clipShadows
+                color={color}
               />
-            </mesh>
+            ) : (
+              <STLPreviewPiece
+                url={url}
+                translation={layout.translation}
+                clippingPlanes={layout.clippingPlanes}
+                color={color}
+              />
+            )}
 
             <Html
               position={[layout.plateCenterX, plateZ + 20, layout.plateCenterZ]}
