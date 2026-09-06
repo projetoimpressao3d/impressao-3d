@@ -82,7 +82,6 @@ function STLPreviewPiece({
   const rawGeometry = useLoader(STLLoader, url);
   const geometry = useMemo(() => {
     const geo = rawGeometry.clone();
-    geo.computeBoundingBox();
     geo.center();
     geo.computeVertexNormals();
     return geo;
@@ -92,8 +91,8 @@ function STLPreviewPiece({
     <mesh geometry={geometry} position={translation} castShadow receiveShadow>
       <meshStandardMaterial
         color={color}
-        roughness={0.4}
-        metalness={0.15}
+        roughness={0.45}
+        metalness={0.1}
         side={THREE.DoubleSide}
         clippingPlanes={clippingPlanes}
         clipShadows
@@ -123,14 +122,15 @@ function ThreeMFPreviewPiece({
     const bbox = new THREE.Box3().setFromObject(g);
     const center = new THREE.Vector3();
     bbox.getCenter(center);
-    g.position.sub(center);
+    // Posiciona o modelo original centrado com a translacao desejada
+    g.position.copy(translation).sub(center);
 
     g.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.material = new THREE.MeshStandardMaterial({
           color,
-          roughness: 0.4,
-          metalness: 0.15,
+          roughness: 0.45,
+          metalness: 0.1,
           side: THREE.DoubleSide,
           clippingPlanes,
           clipShadows: true,
@@ -141,13 +141,9 @@ function ThreeMFPreviewPiece({
     });
 
     return g;
-  }, [rawGroup, color, clippingPlanes]);
+  }, [rawGroup, color, clippingPlanes, translation]);
 
-  return (
-    <group position={translation}>
-      <primitive object={pieceGroup} />
-    </group>
-  );
+  return <primitive object={pieceGroup} />;
 }
 
 export function PiecesPreviewScene({
@@ -166,97 +162,107 @@ export function PiecesPreviewScene({
     };
   }, [gl]);
 
-  const numPieces = cutPlanes.length + 1;
+  const totalPieces = cutPlanes.length + 1;
   const plateX = selectedPlate?.build_volume_x_mm ?? 200;
   const plateY = selectedPlate?.build_volume_y_mm ?? 200;
   const plateZ = selectedPlate?.build_volume_z_mm ?? 200;
 
-  const spacingX = plateX * 1.35;
-  const spacingZ = plateY * 1.35;
+  // Espacamento entre mesas (30% de folga)
+  const spacingX = plateX * 1.30;
+  const spacingZ = plateY * 1.30;
 
-  const plateLayouts = useMemo(() => {
+  // Filtrar pecas validas e calcular disposicao
+  const activeLayouts = useMemo(() => {
+    // Apenas pecas com bbox existente
+    const validPieces = pieceBboxes.filter((pb) => pb && pb.bbox !== null);
+    const count = validPieces.length > 0 ? validPieces.length : totalPieces;
+
     const layouts: Array<{
+      pieceIndex: number;
+      pieceDisplayIndex: number;
       plateCenterX: number;
       plateCenterZ: number;
       translation: THREE.Vector3;
       clippingPlanes: THREE.Plane[];
+      fits: boolean;
+      bbox: { x: number; y: number; z: number } | null;
     }> = [];
 
-    const isGrid = numPieces > 3;
-    const cols = isGrid ? 2 : numPieces;
+    const isGrid = count > 3;
+    const cols = isGrid ? 2 : count;
 
-    for (let i = 0; i < numPieces; i++) {
+    validPieces.forEach((pb, idx) => {
+      const origIdx = pb.pieceIndex;
       let pcX = 0;
       let pcZ = 0;
 
       if (!isGrid) {
-        pcX = (i - (numPieces - 1) / 2) * spacingX;
+        pcX = (idx - (count - 1) / 2) * spacingX;
         pcZ = 0;
       } else {
-        const col = i % cols;
-        const row = Math.floor(i / cols);
-        const totalRows = Math.ceil(numPieces / cols);
+        const col = idx % cols;
+        const row = Math.floor(idx / cols);
+        const totalRows = Math.ceil(count / cols);
         pcX = (col - (cols - 1) / 2) * spacingX;
         pcZ = (row - (totalRows - 1) / 2) * spacingZ;
       }
 
-      const pb = pieceBboxes[i];
       const centerX = pb?.center?.x ?? 0;
       const minY = pb?.minY ?? 0;
       const centerZ = pb?.center?.z ?? 0;
 
+      // Repousa a peca exatamente no piso da mesa (que fica em -plateZ / 2)
       const translation = new THREE.Vector3(
         pcX - centerX,
-        -minY,
+        -plateZ / 2 - minY,
         pcZ - centerZ,
       );
 
       const clippingPlanes = getClippingPlanesForPiece(
         cutPlanes,
-        i,
+        origIdx,
         translation,
       );
 
       layouts.push({
+        pieceIndex: origIdx,
+        pieceDisplayIndex: idx + 1,
         plateCenterX: pcX,
         plateCenterZ: pcZ,
         translation,
         clippingPlanes,
+        fits: pb.fits,
+        bbox: pb.bbox,
       });
-    }
+    });
 
     return layouts;
-  }, [numPieces, spacingX, spacingZ, pieceBboxes, cutPlanes]);
-
-  const controlsTarget = useMemo(() => {
-    return new THREE.Vector3(0, plateZ * 0.35, 0);
-  }, [plateZ]);
+  }, [pieceBboxes, totalPieces, spacingX, spacingZ, plateZ, cutPlanes]);
 
   return (
     <>
       <OrbitControls
         makeDefault
-        target={controlsTarget}
+        target={[0, 0, 0]}
         minDistance={20}
         maxDistance={25000}
         enableDamping
         dampingFactor={0.08}
       />
 
-      {plateLayouts.map((layout, i) => {
-        const color = PIECE_COLORS[i % PIECE_COLORS.length];
-        const pb = pieceBboxes[i];
-        const fits = pb ? pb.fits : true;
-        const bbox = pb?.bbox;
+      {activeLayouts.map((layout) => {
+        const color = PIECE_COLORS[layout.pieceIndex % PIECE_COLORS.length];
 
         return (
-          <group key={`preview-piece-${i}`}>
+          <group key={`preview-piece-${layout.pieceIndex}`}>
+            {/* Mesa de trabalho da peca */}
             {selectedPlate && (
               <group position={[layout.plateCenterX, 0, layout.plateCenterZ]}>
                 <BuildPlateBox plate={selectedPlate} />
               </group>
             )}
 
+            {/* Peca cortada em 3D */}
             {format === "3mf" ? (
               <ThreeMFPreviewPiece
                 url={url}
@@ -273,35 +279,23 @@ export function PiecesPreviewScene({
               />
             )}
 
+            {/* Rotulo discreto e elegante na frente da mesa (piso) */}
             <Html
-              position={[layout.plateCenterX, plateZ + 20, layout.plateCenterZ]}
+              position={[layout.plateCenterX, -plateZ / 2, layout.plateCenterZ + plateY / 2 + 12]}
               center
-              distanceFactor={380}
+              distanceFactor={280}
               style={{ pointerEvents: "none" }}
             >
-              <div className="flex flex-col items-center gap-1 rounded-xl border border-gray-700 bg-gray-900/95 px-3 py-2 text-center shadow-xl backdrop-blur-md select-none">
-                <div className="flex items-center gap-2">
-                  <span
-                    className="inline-block h-3 w-3 rounded-full shadow-sm"
-                    style={{ backgroundColor: color }}
-                  />
-                  <span className="text-xs font-bold text-white tracking-wide">
-                    Mesa {i + 1}: Peca {i + 1}
-                  </span>
-                </div>
-                {bbox && (
-                  <span className="text-[10px] text-gray-400 font-mono">
-                    {fmm(bbox.x)} x {fmm(bbox.y)} x {fmm(bbox.z)} mm
+              <div className="flex items-center gap-1.5 rounded-full border border-gray-700/80 bg-gray-900/90 px-2.5 py-1 text-[11px] font-medium text-white shadow-lg backdrop-blur-sm whitespace-nowrap select-none">
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
+                <span>Mesa {layout.pieceDisplayIndex}: Peca {layout.pieceDisplayIndex}</span>
+                {layout.bbox && (
+                  <span className="text-gray-400 font-mono text-[10px]">
+                    ({fmm(layout.bbox.x)}x{fmm(layout.bbox.y)}x{fmm(layout.bbox.z)}mm)
                   </span>
                 )}
-                <span
-                  className={`mt-0.5 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                    fits
-                      ? "bg-emerald-950/80 text-emerald-400 border border-emerald-800"
-                      : "bg-red-950/80 text-red-400 border border-red-800"
-                  }`}
-                >
-                  {fits ? "✓ Cabe na mesa" : "⚠ Excede a mesa"}
+                <span className={layout.fits ? "text-emerald-400 font-bold" : "text-amber-400 font-bold"}>
+                  {layout.fits ? "✓" : "⚠"}
                 </span>
               </div>
             </Html>

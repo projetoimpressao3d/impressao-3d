@@ -214,17 +214,7 @@ async def _background_separate(
             len(structural_planes), structural_result.filtered_count,
         )
 
-        # 4. Para cada peca estrutural, encadear suggest_cuts (secao 6.4)
-        extra_planes: list[SuggestedCutPlane] = []
-        if structural_planes:
-            extra = await asyncio.to_thread(suggest_cuts, mesh, plate_dims)
-            # Apenas planos naturais/grade (nao duplicar estruturais)
-            extra_planes = [
-                p for p in extra.cut_planes
-                if p.source in ("suggested_natural", "suggested_grid_fallback")
-            ]
-
-        # 5. Consolidar todos os planos
+        # 4. Consolidar os planos estruturais (sem poluir com cortes extras que fatiam peças desnecessariamente)
         all_planes_json: list[dict] = []
 
         for cp in structural_planes:
@@ -234,15 +224,6 @@ async def _background_separate(
                 "label": cp.label,
                 "source": cp.source,
                 "structural_group": cp.structural_group,
-            })
-
-        for cp in extra_planes:
-            all_planes_json.append({
-                "normal": cp.normal,
-                "origin": cp.origin,
-                "label": cp.label,
-                "source": cp.source,
-                "structural_group": None,
             })
 
         # 6. Salvar resultado no banco

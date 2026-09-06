@@ -76,6 +76,7 @@ export function ThreeMFObject({
     if (!onGeometryReady) return;
 
     const allPositions: number[] = [];
+    centeredGroup.updateMatrixWorld(true);
     centeredGroup.traverse((child) => {
       if (child instanceof THREE.Mesh && child.geometry) {
         const geo = child.geometry as THREE.BufferGeometry;
