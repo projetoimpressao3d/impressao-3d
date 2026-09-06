@@ -206,8 +206,9 @@ async def _background_separate(
 
         # 3. Extrair esqueleto e detectar candidatos estruturais
         logger.info("_background_separate: extraindo esqueleto...")
+        plate_list = [plate_dims["x"], plate_dims["y"], plate_dims["z"]]
         structural_result = await asyncio.to_thread(
-            suggest_structural_cuts, mesh, sensitivity
+            suggest_structural_cuts, mesh, sensitivity, plate_list
         )
 
         structural_planes: list[StructuralCutPlane] = structural_result.cut_planes

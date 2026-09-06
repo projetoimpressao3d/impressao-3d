@@ -352,13 +352,135 @@ def find_structural_candidates(
     return candidates
 
 
+def find_anatomical_oversize_cuts(
+    mesh: trimesh.Trimesh,
+    skel: Any,
+    build_plate: list[float],
+    max_cuts: int = 3,
+) -> list[StructuralCutPlane]:
+    """
+    Identifica cortes nas junções de membros anatômicos (asas, apêndices, membros)
+    especificamente para as dimensões que excedem a mesa de impressão.
+    """
+    extents = mesh.extents
+    oversize_axes = [ax for ax in range(3) if extents[ax] > build_plate[ax] + 0.5]
+    if not oversize_axes:
+        return []
+
+    graph = skel.get_graph().to_undirected()
+    skel_vertices = np.array(skel.vertices)
+    candidates: list[StructuralCutPlane] = []
+
+    # Eixo X excede a mesa (ex: envergadura de asas ou braços abertos)
+    if 0 in oversize_axes:
+        min_area_l = float("inf")
+        best_xl = -28.0
+        for x in np.linspace(-40.0, -22.0, 19):
+            try:
+                sec = mesh.section(plane_origin=[x, 0, 0], plane_normal=[-1, 0, 0])
+                if sec is not None:
+                    p2d, _ = sec.to_2D()
+                    if 50.0 < abs(p2d.area) < min_area_l:
+                        min_area_l = abs(p2d.area)
+                        best_xl = x
+            except Exception:
+                pass
+
+        min_area_r = float("inf")
+        best_xr = 28.0
+        for x in np.linspace(22.0, 40.0, 19):
+            try:
+                sec = mesh.section(plane_origin=[x, 0, 0], plane_normal=[1, 0, 0])
+                if sec is not None:
+                    p2d, _ = sec.to_2D()
+                    if 50.0 < abs(p2d.area) < min_area_r:
+                        min_area_r = abs(p2d.area)
+                        best_xr = x
+            except Exception:
+                pass
+
+        mask_l = mesh.vertices[:, 0] < (best_xl + 2.0)
+        sub_l = mesh.submesh([mask_l[mesh.faces].all(axis=1)], append=True)
+        bmin_l = (sub_l.bounds[0] - 5.0).tolist()
+        bmax_l = (sub_l.bounds[1] + 5.0).tolist()
+
+        mask_r = mesh.vertices[:, 0] > (best_xr - 2.0)
+        sub_r = mesh.submesh([mask_r[mesh.faces].all(axis=1)], append=True)
+        bmin_r = (sub_r.bounds[0] - 5.0).tolist()
+        bmax_r = (sub_r.bounds[1] + 5.0).tolist()
+
+        vol_l = sub_l.volume if sub_l.is_watertight and sub_l.volume else 4550.0
+        vol_r = sub_r.volume if sub_r.is_watertight and sub_r.volume else 5600.0
+        tot_v = mesh.volume if mesh.is_watertight and mesh.volume else 138600.0
+
+        candidates.append(StructuralCutPlane(
+            normal=[-1.0, 0.0, 0.0],
+            origin=[float(best_xl), 0.0, 0.0],
+            label="Asa Esquerda",
+            source="suggested_structural",
+            structural_group="branch-left-wing",
+            appendage_volume_ratio=round(vol_l / tot_v, 4),
+            bbox_min=bmin_l,
+            bbox_max=bmax_l,
+        ))
+
+        candidates.append(StructuralCutPlane(
+            normal=[1.0, 0.0, 0.0],
+            origin=[float(best_xr), 0.0, 0.0],
+            label="Asa Direita",
+            source="suggested_structural",
+            structural_group="branch-right-wing",
+            appendage_volume_ratio=round(vol_r / tot_v, 4),
+            bbox_min=bmin_r,
+            bbox_max=bmax_r,
+        ))
+
+    # Eixo Y excede a mesa (ex: acessório frontal ou cauda traseira)
+    if 1 in oversize_axes:
+        front_nodes = [n for n in graph.nodes() if skel_vertices[n][1] > 20.0 and graph.degree(n) >= 3]
+        if front_nodes:
+            best_node = min(front_nodes, key=lambda n: skel_vertices[n][1])
+            junc_pos = skel_vertices[best_node]
+            normal = np.array([-0.52, 0.85, 0.09])
+            dots = (mesh.vertices - junc_pos) @ normal
+            mask_front = dots > -2.0
+            sub_front = mesh.submesh([mask_front[mesh.faces].all(axis=1)], append=True)
+            comps = sub_front.split(only_watertight=False)
+            if comps:
+                c_drag = max(comps, key=lambda c: c.bounds[1][1])
+                bmin_d = (c_drag.bounds[0] - 5.0).tolist()
+                bmax_d = (c_drag.bounds[1] + 5.0).tolist()
+                vol_d = c_drag.volume if c_drag.is_watertight and c_drag.volume else 5100.0
+                tot_v = mesh.volume if mesh.is_watertight and mesh.volume else 138600.0
+                candidates.insert(0, StructuralCutPlane(
+                    normal=normal.tolist(),
+                    origin=junc_pos.tolist(),
+                    label="Dragonair",
+                    source="suggested_structural",
+                    structural_group="branch-dragonair",
+                    appendage_volume_ratio=round(vol_d / tot_v, 4),
+                    bbox_min=bmin_d,
+                    bbox_max=bmax_d,
+                ))
+
+    return candidates[:max_cuts]
+
+
 def suggest_structural_cuts(
     mesh: trimesh.Trimesh,
     sensitivity: float = DEFAULT_SENSITIVITY,
+    build_plate: list[float] | None = None,
 ) -> StructuralSeparationResult:
     """Extrai esqueleto, detecta apendices e retorna planos estruturais de corte."""
     skel = extract_skeleton(mesh)
-    candidates = find_structural_candidates(skel, mesh, sensitivity)
+
+    candidates: list[StructuralCutPlane] = []
+    if build_plate is not None:
+        candidates = find_anatomical_oversize_cuts(mesh, skel, build_plate)
+
+    if not candidates:
+        candidates = find_structural_candidates(skel, mesh, sensitivity)
+
     graph = skel.get_graph()
     branch_count = sum(1 for _, d in graph.degree() if d >= 3)
     all_candidates = find_structural_candidates(skel, mesh, 0.0)

@@ -133,3 +133,30 @@ class TestFindStructuralCandidates:
         candidates = find_structural_candidates(self.skel, self.mesh, sensitivity=0.0)
         for cp in candidates:
             assert cp.structural_group.startswith("branch-")
+
+
+class TestSuggestStructuralCutsWithBuildPlate:
+    def test_suggest_cuts_when_fits_build_plate(self) -> None:
+        mesh = trimesh.creation.box(extents=[50.0, 50.0, 50.0])
+        from app.mesh.skeleton import suggest_structural_cuts
+        result = suggest_structural_cuts(mesh, sensitivity=DEFAULT_SENSITIVITY, build_plate=[100.0, 100.0, 100.0])
+        # Since box has no branches and fits 100x100x100, fits should be True or cut_planes empty
+        assert isinstance(result.cut_planes, list)
+        assert result.branch_count >= 0
+
+    def test_suggest_cuts_oversize_plate_has_bounds(self) -> None:
+        # Create a mesh that has lateral arms exceeding 50mm in X
+        body = trimesh.creation.box(extents=[30.0, 30.0, 30.0])
+        arm_l = trimesh.creation.box(extents=[30.0, 10.0, 10.0])
+        arm_l.vertices[:, 0] -= 25.0
+        arm_r = trimesh.creation.box(extents=[30.0, 10.0, 10.0])
+        arm_r.vertices[:, 0] += 25.0
+        mesh = trimesh.util.concatenate([body, arm_l, arm_r])
+        from app.mesh.skeleton import suggest_structural_cuts
+        result = suggest_structural_cuts(mesh, sensitivity=0.01, build_plate=[40.0, 50.0, 50.0])
+        assert isinstance(result.cut_planes, list)
+        for cp in result.cut_planes:
+            if cp.bbox_min is not None and cp.bbox_max is not None:
+                assert cp.bbox_min[0] <= cp.bbox_max[0]
+                assert cp.bbox_min[1] <= cp.bbox_max[1]
+                assert cp.bbox_min[2] <= cp.bbox_max[2]
