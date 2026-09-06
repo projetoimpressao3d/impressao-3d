@@ -217,3 +217,29 @@ class TestNormalization:
                 box(),
                 [CutPlaneInput(normal=[0.0, 0.0, 0.0], origin=[0.0, 0.0, 0.0])],
             )
+
+
+class TestBoundedVolumeCut:
+    def test_bounded_cut_cuts_only_within_bbox(self) -> None:
+        """Corte delimitado com bbox_min/max deve recortar apenas o apendice local."""
+        # Criar duas caixas separadas fundidas numa unica malha
+        b1 = trimesh.creation.box(extents=[40.0, 40.0, 40.0])
+        b1.apply_translation([-50.0, 0.0, 0.0])
+        b2 = trimesh.creation.box(extents=[40.0, 40.0, 40.0])
+        b2.apply_translation([50.0, 0.0, 0.0])
+        merged = trimesh.util.concatenate([b1, b2])
+
+        # Corte delimitado mirando apenas b2 (x > 30)
+        plane = CutPlaneInput(
+            normal=[1.0, 0.0, 0.0],
+            origin=[30.0, 0.0, 0.0],
+            label="Corte b2",
+            bbox_min=[30.0, -25.0, -25.0],
+            bbox_max=[75.0, 25.0, 25.0],
+        )
+
+        result = cut_mesh_by_planes(merged, [plane])
+        assert len(result) == 2
+        # b1 permaneceu intacto em [-50, 0, 0] no fragmento bottom
+        # b2 foi extraido no fragmento top
+        assert any(p.bounds[0][0] > 20.0 for p in result)

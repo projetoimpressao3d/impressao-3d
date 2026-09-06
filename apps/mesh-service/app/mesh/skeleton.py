@@ -35,6 +35,8 @@ class StructuralCutPlane:
     source: str = "suggested_structural"
     structural_group: str = "trunk"
     appendage_volume_ratio: float = 0.0
+    bbox_min: list[float] | None = None
+    bbox_max: list[float] | None = None
 
 
 @dataclass
@@ -170,14 +172,14 @@ def _compute_branch_cut_plane(
     return direction.tolist(), best_point.tolist()
 
 
-def _estimate_appendage_volume(
+def _estimate_appendage_volume_and_bounds(
     mesh: trimesh.Trimesh,
     cut_origin: np.ndarray,
     cut_normal: np.ndarray,
     branch_pts: np.ndarray | None = None,
-) -> float:
+) -> tuple[float, list[float] | None, list[float] | None]:
     """
-    Estima o volume do apendice associado ao ramo no lado positivo do corte.
+    Estima o volume e bounding box do apendice associado ao ramo no lado positivo do corte.
     Isola o componente conexo associado aos pontos do ramo para evitar que
     o plano infinito conte partes distantes da geometria.
     """
@@ -187,7 +189,7 @@ def _estimate_appendage_volume(
         appendage_mask = (face_dots >= 0).all(axis=1)
         n_appendage_faces = appendage_mask.sum()
         if n_appendage_faces == 0:
-            return 0.0
+            return 0.0, None, None
 
         total_volume = abs(float(mesh.volume)) if mesh.volume is not None else 1.0
 
@@ -207,16 +209,29 @@ def _estimate_appendage_volume(
                             min_d = d
                             best_comp = comp
                     if best_comp is not None:
+                        b_min = best_comp.bounds[0].tolist()
+                        b_max = best_comp.bounds[1].tolist()
                         if best_comp.is_watertight and best_comp.volume is not None:
-                            return abs(float(best_comp.volume))
-                        return (len(best_comp.faces) / len(mesh.faces)) * total_volume
+                            return abs(float(best_comp.volume)), b_min, b_max
+                        return (len(best_comp.faces) / len(mesh.faces)) * total_volume, b_min, b_max
             except Exception:
                 pass
 
         volume_ratio = n_appendage_faces / len(mesh.faces)
-        return volume_ratio * total_volume
+        return volume_ratio * total_volume, None, None
     except Exception:  # noqa: BLE001
-        return 0.0
+        return 0.0, None, None
+
+
+def _estimate_appendage_volume(
+    mesh: trimesh.Trimesh,
+    cut_origin: np.ndarray,
+    cut_normal: np.ndarray,
+    branch_pts: np.ndarray | None = None,
+) -> float:
+    """Compatibilidade com testes: retorna apenas o volume float."""
+    vol, _, _ = _estimate_appendage_volume_and_bounds(mesh, cut_origin, cut_normal, branch_pts)
+    return vol
 
 
 def find_structural_candidates(
@@ -264,7 +279,9 @@ def find_structural_candidates(
         normal_arr = np.array(normal_list)
         origin_arr = np.array(origin_list)
 
-        appendage_vol = _estimate_appendage_volume(mesh, origin_arr, normal_arr, branch_pts=b_pts)
+        appendage_vol, b_min, b_max = _estimate_appendage_volume_and_bounds(
+            mesh, origin_arr, normal_arr, branch_pts=b_pts
+        )
         ratio = appendage_vol / total_volume
 
         # Um apendice e por definicao <= 50% do volume do modelo.
@@ -272,7 +289,9 @@ def find_structural_candidates(
         if ratio > 0.50:
             normal_arr = -normal_arr
             normal_list = normal_arr.tolist()
-            appendage_vol = _estimate_appendage_volume(mesh, origin_arr, normal_arr, branch_pts=b_pts)
+            appendage_vol, b_min, b_max = _estimate_appendage_volume_and_bounds(
+                mesh, origin_arr, normal_arr, branch_pts=b_pts
+            )
             ratio = appendage_vol / total_volume
 
         logger.debug("Ramo %d: volume_ratio=%.3f, sensitivity=%.3f", i, ratio, sensitivity)
@@ -286,6 +305,8 @@ def find_structural_candidates(
             "origin": origin_list,
             "structural_group": f"branch-{i}",
             "volume_ratio": round(ratio, 4),
+            "bbox_min": b_min,
+            "bbox_max": b_max,
         })
 
     # Ordenar candidatos pelo volume relativo decrescente
@@ -308,8 +329,12 @@ def find_structural_candidates(
         if not duplicate:
             clustered.append(rc)
 
+    # Limitar aos apêndices principais mais relevantes (máximo 3) para evitar fatiamento concorrente excessivo
+    max_structural_cuts = 3
+    selected = clustered[:max_structural_cuts]
+
     candidates: list[StructuralCutPlane] = []
-    for idx, c in enumerate(clustered):
+    for idx, c in enumerate(selected):
         candidates.append(
             StructuralCutPlane(
                 normal=c["normal"],
@@ -318,6 +343,8 @@ def find_structural_candidates(
                 source="suggested_structural",
                 structural_group=c["structural_group"],
                 appendage_volume_ratio=c["volume_ratio"],
+                bbox_min=c.get("bbox_min"),
+                bbox_max=c.get("bbox_max"),
             )
         )
 

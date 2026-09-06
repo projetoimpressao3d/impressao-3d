@@ -41,6 +41,43 @@ function getClippingPlanesForPiece(
   const N = cutPlanes.length;
   const planes: THREE.Plane[] = [];
 
+  // Se é uma peça de apêndice (pieceIdx < N)
+  if (pieceIdx < N) {
+    const cp = cutPlanes[pieceIdx];
+    const q = new THREE.Quaternion(cp.qx, cp.qy, cp.qz, cp.qw);
+    const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(q).normalize();
+    const origin = new THREE.Vector3(cp.px, cp.py, cp.pz);
+    const localOffset = normal.dot(origin);
+
+    // 1. Plano de corte na junção (lado "top")
+    const n = normal.clone();
+    const c = -localOffset - n.dot(worldOffset);
+    planes.push(new THREE.Plane(n, c));
+
+    // 2. Se possuir caixa delimitadora local (Bounded Volume Cut), adicionar as 6 faces da caixa
+    if (cp.bbox_min && cp.bbox_max) {
+      const pad = 8.0;
+      const bMin = [cp.bbox_min[0] - pad, cp.bbox_min[1] - pad, cp.bbox_min[2] - pad];
+      const bMax = [cp.bbox_max[0] + pad, cp.bbox_max[1] + pad, cp.bbox_max[2] + pad];
+
+      const boxFaces: Array<[THREE.Vector3, number]> = [
+        [new THREE.Vector3(1, 0, 0), -bMin[0]],
+        [new THREE.Vector3(-1, 0, 0), bMax[0]],
+        [new THREE.Vector3(0, 1, 0), -bMin[1]],
+        [new THREE.Vector3(0, -1, 0), bMax[1]],
+        [new THREE.Vector3(0, 0, 1), -bMin[2]],
+        [new THREE.Vector3(0, 0, -1), bMax[2]],
+      ];
+
+      for (const [bn, bd] of boxFaces) {
+        const bc = bd - bn.dot(worldOffset);
+        planes.push(new THREE.Plane(bn, bc));
+      }
+    }
+    return planes;
+  }
+
+  // Peça final (corpo restante, pieceIdx === N): lado "bottom" dos planos
   for (let j = 0; j < N; j++) {
     const cp = cutPlanes[j];
     const q = new THREE.Quaternion(cp.qx, cp.qy, cp.qz, cp.qw);
@@ -48,21 +85,9 @@ function getClippingPlanesForPiece(
     const origin = new THREE.Vector3(cp.px, cp.py, cp.pz);
     const localOffset = normal.dot(origin);
 
-    if (pieceIdx < N) {
-      if (j < pieceIdx) {
-        const n = normal.clone().negate();
-        const c = localOffset - n.dot(worldOffset);
-        planes.push(new THREE.Plane(n, c));
-      } else if (j === pieceIdx) {
-        const n = normal.clone();
-        const c = -localOffset - n.dot(worldOffset);
-        planes.push(new THREE.Plane(n, c));
-      }
-    } else {
-      const n = normal.clone().negate();
-      const c = localOffset - n.dot(worldOffset);
-      planes.push(new THREE.Plane(n, c));
-    }
+    const n = normal.clone().negate();
+    const c = localOffset - n.dot(worldOffset);
+    planes.push(new THREE.Plane(n, c));
   }
 
   return planes;

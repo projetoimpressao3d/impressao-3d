@@ -49,6 +49,8 @@ class CutPlaneOut(BaseModel):
     label: str
     source: str
     structural_group: str | None = None
+    bbox_min: list[float] | None = None
+    bbox_max: list[float] | None = None
 
 
 class SeparateResponse(BaseModel):
@@ -224,6 +226,8 @@ async def _background_separate(
                 "label": cp.label,
                 "source": cp.source,
                 "structural_group": cp.structural_group,
+                "bbox_min": cp.bbox_min,
+                "bbox_max": cp.bbox_max,
             })
 
         # 6. Salvar resultado no banco

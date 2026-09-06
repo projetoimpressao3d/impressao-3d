@@ -137,6 +137,9 @@ export interface CutPlaneData {
   source: "suggested_natural" | "suggested_grid_fallback" | "suggested_structural" | "manual";
   /** Rótulo interno do apêndice de origem (ex: "branch-0"). Null para não-estruturais. */
   structural_group?: string | null;
+  /** Limites tridimensionais do membro para Corte Local Delimitado (Bounded Volume Cut). */
+  bbox_min?: [number, number, number] | null;
+  bbox_max?: [number, number, number] | null;
 }
 
 /** Status de fit de uma peça resultante do corte. */

@@ -51,6 +51,8 @@ class CutPlaneOut(BaseModel):
     origin: list[float]   # posicao 3D do plano (coordenadas centradas)
     label: str
     source: str           # "suggested_natural" | "suggested_grid_fallback"
+    bbox_min: list[float] | None = None
+    bbox_max: list[float] | None = None
 
 
 class SplitSessionResponse(BaseModel):
@@ -412,6 +414,8 @@ class ExecuteCutPlane(BaseModel):
     normal: list[float]  # vetor normal normalizado, ex: [1.0, 0.0, 0.0]
     origin: list[float]  # ponto no plano em coords. do modelo centrado, ex: [25.0, 0.0, 0.0]
     label: str = ""
+    bbox_min: list[float] | None = None
+    bbox_max: list[float] | None = None
 
 
 class ExecuteRequest(BaseModel):
@@ -535,6 +539,8 @@ async def execute_split(
                 normal=cp.normal,
                 origin=cp.origin,
                 label=cp.label,
+                bbox_min=cp.bbox_min,
+                bbox_max=cp.bbox_max,
             )
             for cp in payload.cut_planes
         ]

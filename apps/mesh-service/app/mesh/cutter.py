@@ -34,6 +34,8 @@ class CutPlaneInput:
     normal: list[float]  # vetor normal normalizado, ex: [1.0, 0.0, 0.0]
     origin: list[float]  # ponto no plano em coords. do modelo centrado, ex: [25.0, 0.0, 0.0]
     label: str = field(default="")
+    bbox_min: list[float] | None = field(default=None)
+    bbox_max: list[float] | None = field(default=None)
 
 
 def _trimesh_to_manifold(mesh: trimesh.Trimesh) -> Manifold:
@@ -81,7 +83,11 @@ def cut_mesh_by_planes(
     planes: list[CutPlaneInput],
 ) -> list[trimesh.Trimesh]:
     """
-    Aplica N planos de corte sequencialmente usando manifold3d.split_by_plane().
+    Aplica N planos de corte sequencialmente usando manifold3d.
+
+    Para planos estruturais com caixa delimitadora (bbox_min/bbox_max), executa
+    o Corte Local Delimitado (Bounded Volume Cut), extraindo apenas o apendice local
+    sem tocar em partes distantes da geometria.
 
     O capping de cada face aberta é feito AUTOMATICAMENTE pelo manifold3d —
     não é necessária nenhuma etapa adicional de fechamento.
@@ -125,16 +131,37 @@ def cut_mesh_by_planes(
         origin_offset = float(np.dot(n, o))
 
         logger.info(
-            "Corte %d/%d: normal=%s offset=%.3fmm label='%s'",
+            "Corte %d/%d: normal=%s offset=%.3fmm label='%s' bounded=%s",
             i + 1,
             len(planes),
             [round(x, 4) for x in n.tolist()],
             origin_offset,
             plane.label,
+            plane.bbox_min is not None,
         )
 
         try:
-            top, bottom = current.split_by_plane(n.tolist(), origin_offset)
+            if plane.bbox_min is not None and plane.bbox_max is not None:
+                # Corte Local Delimitado (Bounded Volume Cut):
+                # Cria caixa delimitadora em volta do apêndice com margem de segurança
+                b_min = np.asarray(plane.bbox_min, dtype=np.float64) - 8.0
+                b_max = np.asarray(plane.bbox_max, dtype=np.float64) + 8.0
+                box_dim = b_max - b_min
+                box_center = (b_min + b_max) / 2.0
+
+                box_mesh = trimesh.creation.box(extents=box_dim)
+                box_mesh.vertices += box_center
+
+                m_box = Manifold(Mesh(
+                    vert_properties=np.asarray(box_mesh.vertices, dtype=np.float64),
+                    tri_verts=np.asarray(box_mesh.faces, dtype=np.uint32),
+                ))
+
+                m_box_top, _ = m_box.split_by_plane(n.tolist(), origin_offset)
+                top = current ^ m_box_top
+                bottom = current - m_box_top
+            else:
+                top, bottom = current.split_by_plane(n.tolist(), origin_offset)
         except Exception as exc:
             raise RuntimeError(
                 f"manifold3d falhou no corte {i + 1}/{len(planes)}: {exc}. "

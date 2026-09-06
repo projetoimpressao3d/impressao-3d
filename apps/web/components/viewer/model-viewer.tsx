@@ -118,53 +118,48 @@ function computePieceBboxes(
     const py = positions[vi + 1];
     const pz = positions[vi + 2];
 
-    for (let pieceIdx = 0; pieceIdx < numPieces; pieceIdx++) {
-      let inPiece = true;
+    let assignedPiece = -1;
 
-      if (pieceIdx < N) {
-        // Verificar planos 0..pieceIdx
-        for (let j = 0; j <= pieceIdx; j++) {
-          const sd =
-            normals[j].x * px +
-            normals[j].y * py +
-            normals[j].z * pz -
-            offsets[j];
+    // Verificar se o vértice pertence a um dos apêndices (peças 0..N-1)
+    for (let j = 0; j < N; j++) {
+      const sd =
+        normals[j].x * px +
+        normals[j].y * py +
+        normals[j].z * pz -
+        offsets[j];
 
-          if (j < pieceIdx && sd > EPSILON) {
-            // Deve estar no lado "bottom" do plano j
-            inPiece = false;
+      if (sd >= -EPSILON) {
+        const cp = cutPlanes[j];
+        if (cp.bbox_min && cp.bbox_max) {
+          const inBox =
+            px >= cp.bbox_min[0] - 8.0 &&
+            px <= cp.bbox_max[0] + 8.0 &&
+            py >= cp.bbox_min[1] - 8.0 &&
+            py <= cp.bbox_max[1] + 8.0 &&
+            pz >= cp.bbox_min[2] - 8.0 &&
+            pz <= cp.bbox_max[2] + 8.0;
+          if (inBox) {
+            assignedPiece = j;
             break;
           }
-          if (j === pieceIdx && sd < -EPSILON) {
-            // Deve estar no lado "top" do plano pieceIdx
-            inPiece = false;
-            break;
-          }
+        } else {
+          assignedPiece = j;
+          break;
         }
-      } else {
-        // Última peça: bottom de TODOS os planos
-        for (let j = 0; j < N; j++) {
-          const sd =
-            normals[j].x * px +
-            normals[j].y * py +
-            normals[j].z * pz -
-            offsets[j];
-          if (sd > EPSILON) {
-            inPiece = false;
-            break;
-          }
-        }
-      }
-
-      if (inPiece) {
-        if (px < mins[pieceIdx][0]) mins[pieceIdx][0] = px;
-        if (py < mins[pieceIdx][1]) mins[pieceIdx][1] = py;
-        if (pz < mins[pieceIdx][2]) mins[pieceIdx][2] = pz;
-        if (px > maxs[pieceIdx][0]) maxs[pieceIdx][0] = px;
-        if (py > maxs[pieceIdx][1]) maxs[pieceIdx][1] = py;
-        if (pz > maxs[pieceIdx][2]) maxs[pieceIdx][2] = pz;
       }
     }
+
+    // Se não pertence a nenhum apêndice anterior, pertence ao corpo restante (peça N)
+    if (assignedPiece === -1) {
+      assignedPiece = N;
+    }
+
+    if (px < mins[assignedPiece][0]) mins[assignedPiece][0] = px;
+    if (py < mins[assignedPiece][1]) mins[assignedPiece][1] = py;
+    if (pz < mins[assignedPiece][2]) mins[assignedPiece][2] = pz;
+    if (px > maxs[assignedPiece][0]) maxs[assignedPiece][0] = px;
+    if (py > maxs[assignedPiece][1]) maxs[assignedPiece][1] = py;
+    if (pz > maxs[assignedPiece][2]) maxs[assignedPiece][2] = pz;
   }
 
   // Construir resultados
@@ -477,6 +472,8 @@ export function ModelViewer({
               label: cp.label,
               source: cp.source as CutPlaneData["source"],
               structural_group: cp.structural_group ?? null,
+              bbox_min: (cp as { bbox_min?: [number, number, number] | null }).bbox_min ?? null,
+              bbox_max: (cp as { bbox_max?: [number, number, number] | null }).bbox_max ?? null,
             };
           });
 
@@ -575,6 +572,8 @@ export function ModelViewer({
         normal: [normal.x, normal.y, normal.z],
         origin: [cp.px, cp.py, cp.pz],
         label: cp.label,
+        bbox_min: cp.bbox_min ?? null,
+        bbox_max: cp.bbox_max ?? null,
       };
     });
 
