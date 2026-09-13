@@ -118,7 +118,7 @@ export function BuildPlateForm({ existing }: BuildPlateFormProps) {
           maxLength={80}
           value={form.name}
           onChange={(e) => setField("name", e.target.value)}
-          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm placeholder-gray-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
           placeholder="Ex: Minha Ender 3"
         />
       </div>
@@ -156,7 +156,7 @@ export function BuildPlateForm({ existing }: BuildPlateFormProps) {
                   step={0.1}
                   value={form[field]}
                   onChange={(e) => setField(field, e.target.value)}
-                  className="w-full rounded-md border border-gray-300 py-2 pl-3 pr-10 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+                  className="w-full rounded-md border border-gray-300 py-2 pl-3 pr-10 text-sm text-gray-900 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
                   placeholder="256"
                 />
                 <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400">
@@ -186,7 +186,7 @@ export function BuildPlateForm({ existing }: BuildPlateFormProps) {
             step={0.1}
             value={form.nozzle}
             onChange={(e) => setField("nozzle", e.target.value)}
-            className="w-full rounded-md border border-gray-300 py-2 pl-3 pr-10 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+            className="w-full rounded-md border border-gray-300 py-2 pl-3 pr-10 text-sm text-gray-900 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
             placeholder="0.4"
           />
           <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400">
