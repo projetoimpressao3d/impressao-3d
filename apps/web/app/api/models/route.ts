@@ -78,7 +78,14 @@ export async function POST(request: NextRequest) {
   }
   // ─────────────────────────────────────────────────────────────────────────
 
-  // Criar registro com status 'pending' — a análise vai atualizar depois
+  // Se o backend não está configurado, não há como analisar — criar como "ok"
+  // para não deixar o modelo preso em "Analisando..." para sempre.
+  const backendConfigured = !!(
+    process.env.PYTHON_BACKEND_URL && process.env.PYTHON_BACKEND_INTERNAL_TOKEN
+  );
+  const initialStatus = backendConfigured ? "pending" : "ok";
+
+  // Criar registro com status inicial
   const admin = createAdminClient();
   const { data: model, error } = await admin
     .from("models")
@@ -89,7 +96,7 @@ export async function POST(request: NextRequest) {
       format,
       original_filename: original_filename ?? name,
       source: "upload",
-      printability_status: "pending",
+      printability_status: initialStatus,
     })
     .select()
     .single();
