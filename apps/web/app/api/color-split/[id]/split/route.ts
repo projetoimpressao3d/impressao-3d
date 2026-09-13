@@ -15,8 +15,15 @@ export async function POST(
     cap_method?: string;
     snap_to_floor?: boolean;
   };
-  const meshUrl = process.env.PYTHON_BACKEND_URL ?? "http://localhost:8000";
+  const meshUrl = process.env.PYTHON_BACKEND_URL;
   const token = process.env.PYTHON_BACKEND_INTERNAL_TOKEN ?? "";
+
+  if (!meshUrl) {
+    return NextResponse.json(
+      { detail: "Serviço de análise não configurado. Configure o PYTHON_BACKEND_URL no ambiente." },
+      { status: 503 },
+    );
+  }
 
   try {
     const upstream = await fetch(`${meshUrl}/color-split/${modelId}/split`, {

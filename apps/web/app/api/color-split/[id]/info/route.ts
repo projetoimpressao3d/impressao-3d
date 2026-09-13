@@ -1,4 +1,4 @@
-﻿import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 
 export async function GET(
@@ -10,8 +10,15 @@ export async function GET(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Nao autorizado" }, { status: 401 });
 
-  const meshUrl = process.env.PYTHON_BACKEND_URL ?? "http://localhost:8000";
+  const meshUrl = process.env.PYTHON_BACKEND_URL;
   const token = process.env.PYTHON_BACKEND_INTERNAL_TOKEN ?? "";
+
+  if (!meshUrl) {
+    return NextResponse.json(
+      { detail: "Serviço de análise não configurado. Configure o PYTHON_BACKEND_URL no ambiente." },
+      { status: 503 },
+    );
+  }
 
   try {
     const upstream = await fetch(

@@ -87,7 +87,13 @@ export function ColorSplitPanel({
       const res = await fetch(`/api/color-split/${modelId}/info`);
       if (!res.ok) {
         const err = (await res.json()) as { detail?: string };
-        throw new Error(err.detail ?? `HTTP ${res.status}`);
+        if (res.status === 503) {
+          throw new Error(
+            "O serviço de processamento não está disponível no momento. " +
+            "O backend Python precisa ser configurado para usar esta funcionalidade.",
+          );
+        }
+        throw new Error(err.detail ?? `Erro HTTP ${res.status}`);
       }
       const data = (await res.json()) as {
         is_painted: boolean;
@@ -96,7 +102,7 @@ export function ColorSplitPanel({
       };
       setColorInfo(data);
     } catch (err) {
-      setError(String(err));
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
