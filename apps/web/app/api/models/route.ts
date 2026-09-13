@@ -52,6 +52,32 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // ── Verificar limite do plano ─────────────────────────────────────────────
+  // Plano free: máximo de 1 modelo. Plano pro: ilimitado.
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("plan")
+    .eq("id", user.id)
+    .single();
+
+  if (profile?.plan === "free") {
+    const { count } = await supabase
+      .from("models")
+      .select("*", { count: "exact", head: true });
+
+    if ((count ?? 0) >= 1) {
+      return NextResponse.json(
+        {
+          error: "PLAN_LIMIT",
+          message:
+            "O plano gratuito permite apenas 1 modelo. Faça upgrade para o plano Pro para enviar mais modelos.",
+        },
+        { status: 403 },
+      );
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   // Criar registro com status 'pending' — a análise vai atualizar depois
   const admin = createAdminClient();
   const { data: model, error } = await admin

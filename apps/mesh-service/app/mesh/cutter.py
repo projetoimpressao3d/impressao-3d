@@ -143,23 +143,86 @@ def cut_mesh_by_planes(
         try:
             if plane.bbox_min is not None and plane.bbox_max is not None:
                 # Corte Local Delimitado (Bounded Volume Cut):
-                # Cria caixa delimitadora em volta do apêndice com margem de segurança
-                b_min = np.asarray(plane.bbox_min, dtype=np.float64) - 8.0
-                b_max = np.asarray(plane.bbox_max, dtype=np.float64) + 8.0
-                box_dim = b_max - b_min
-                box_center = (b_min + b_max) / 2.0
+                # Tentar construir uma cápsula justa ao redor do esqueleto do apêndice para evitar engolir partes próximas
+                capsule_created = False
+                if plane.branch_pts and len(plane.branch_pts) >= 2:
+                    try:
+                        pts = np.array(plane.branch_pts)
+                        p_start = pts[-1]
+                        p_end = pts[0]
+                        vec = p_end - p_start
+                        length = np.linalg.norm(vec)
+                        if length > 0.1:
+                            # Raio 40mm é suficiente para cobrir asas/rabos finos
+                            cyl = trimesh.creation.cylinder(radius=40.0, height=length + 80.0)
+                            # Alinhar o cilindro com o vetor
+                            z_axis = np.array([0, 0, 1])
+                            dir_vec = vec / length
+                            axis = np.cross(z_axis, dir_vec)
+                            angle = np.arccos(np.clip(np.dot(z_axis, dir_vec), -1.0, 1.0))
+                            if np.linalg.norm(axis) > 1e-6:
+                                axis = axis / np.linalg.norm(axis)
+                                rot = trimesh.transformations.rotation_matrix(angle, axis)
+                            else:
+                                rot = np.eye(4)
+                                if dir_vec[2] < 0:
+                                    rot[2, 2] = -1
+                            
+                            rot[:3, 3] = p_start + vec / 2.0
+                            cyl.apply_transform(rot)
+                            m_box = Manifold(Mesh(
+                                vert_properties=np.asarray(cyl.vertices, dtype=np.float64),
+                                tri_verts=np.asarray(cyl.faces, dtype=np.uint32),
+                            ))
+                            capsule_created = True
+                    except Exception as e:
+                        logger.warning(f"Falha ao criar cápsula delimitadora: {e}")
 
-                box_mesh = trimesh.creation.box(extents=box_dim)
-                box_mesh.vertices += box_center
+                if not capsule_created:
+                    b_min = np.asarray(plane.bbox_min, dtype=np.float64) - 8.0
+                    b_max = np.asarray(plane.bbox_max, dtype=np.float64) + 8.0
+                    extents = b_max - b_min
+                    # Se for plano de grade, as bounds podem ser invalidas (todas 0)
+                    if np.any(extents <= 0):
+                        box_mesh = trimesh.creation.box(extents=[1000, 1000, 1000])
+                    else:
+                        box_mesh = trimesh.creation.box(extents=extents)
+                        box_mesh.vertices += (b_min + b_max) / 2.0
+                    m_box = Manifold(Mesh(
+                        vert_properties=np.asarray(box_mesh.vertices, dtype=np.float64),
+                        tri_verts=np.asarray(box_mesh.faces, dtype=np.uint32),
+                    ))
 
-                m_box = Manifold(Mesh(
-                    vert_properties=np.asarray(box_mesh.vertices, dtype=np.float64),
-                    tri_verts=np.asarray(box_mesh.faces, dtype=np.uint32),
-                ))
-
-                m_box_top, _ = m_box.split_by_plane(n.tolist(), origin_offset)
-                top = current ^ m_box_top
-                bottom = current - m_box_top
+                # Separar a malha atual no que está dentro e fora da caixa
+                inside_box = current ^ m_box
+                outside_box = current - m_box
+                
+                # Cortar apenas o que está dentro da caixa com o plano
+                top_inside, bottom_inside = inside_box.split_by_plane(n.tolist(), origin_offset)
+                
+                # Isolar apenas o apêndice alvo, devolvendo "bystanders" (ex: Dragonair) para o corpo
+                top_pieces = top_inside.decompose()
+                if top_pieces:
+                    # Encontrar a peça cujo centroid está mais próximo do origin do plano
+                    origin_pt = np.asarray(plane.origin)
+                    best_piece = top_pieces[0]
+                    min_dist = float('inf')
+                    for p in top_pieces:
+                        dist = float(np.linalg.norm(_manifold_to_trimesh(p).bounding_box.centroid - origin_pt))
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_piece = p
+                    
+                    top = best_piece
+                    # As outras peças voltam para o corpo
+                    for p in top_pieces:
+                        if p != best_piece:
+                            bottom_inside = bottom_inside + p
+                else:
+                    top = top_inside
+                
+                # O corpo restante é a parte de baixo (dentro da caixa) fundida com tudo que estava fora
+                bottom = bottom_inside + outside_box
             else:
                 top, bottom = current.split_by_plane(n.tolist(), origin_offset)
         except Exception as exc:

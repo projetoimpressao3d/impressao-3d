@@ -19,3 +19,21 @@ body {
   background: var(--background);
   font-family: var(--font-sans), system-ui, sans-serif;
 }
+
+/*
+ * Fix para o estilo de autofill do browser (Chrome, Safari, Edge).
+ * O browser aplica fundo azul claro e cor de texto própria ao autocompletar.
+ * O truque do box-shadow inset força fundo branco sem usar background-color
+ * (que o browser ignora no estado autofill). -webkit-text-fill-color garante
+ * que o texto fique sempre escuro e legível.
+ */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  -webkit-text-fill-color: #111827;               /* gray-900 — texto escuro */
+  -webkit-box-shadow: 0 0 0 1000px #ffffff inset; /* força fundo branco */
+  box-shadow: 0 0 0 1000px #ffffff inset;
+  transition: background-color 9999s ease-in-out 0s; /* impede flash do fundo */
+  caret-color: #111827;                           /* cursor na mesma cor */
+}

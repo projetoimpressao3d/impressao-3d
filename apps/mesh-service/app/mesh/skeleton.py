@@ -33,10 +33,11 @@ class StructuralCutPlane:
     origin: list[float]
     label: str
     source: str = "suggested_structural"
-    structural_group: str = "trunk"
-    appendage_volume_ratio: float = 0.0
+    structural_group: int | None = None
+    appendage_volume_ratio: float | None = None
     bbox_min: list[float] | None = None
     bbox_max: list[float] | None = None
+    branch_pts: list[list[float]] | None = None
 
 
 @dataclass
@@ -173,55 +174,39 @@ def _compute_branch_cut_plane(
 
 
 def _estimate_appendage_volume_and_bounds(
-    mesh: trimesh.Trimesh,
-    cut_origin: np.ndarray,
-    cut_normal: np.ndarray,
-    branch_pts: np.ndarray | None = None,
-) -> tuple[float, list[float] | None, list[float] | None]:
-    """
-    Estima o volume e bounding box do apendice associado ao ramo no lado positivo do corte.
-    Isola o componente conexo associado aos pontos do ramo para evitar que
-    o plano infinito conte partes distantes da geometria.
-    """
+    mesh: trimesh.Trimesh, origin: np.ndarray, normal: np.ndarray, branch_pts: np.ndarray | None = None
+):
     try:
-        dots = (mesh.vertices - cut_origin) @ cut_normal
-        face_dots = dots[mesh.faces]
-        appendage_mask = (face_dots >= 0).all(axis=1)
-        n_appendage_faces = appendage_mask.sum()
-        if n_appendage_faces == 0:
+        from manifold3d import Mesh, Manifold
+        from app.mesh.cutter import _manifold_to_trimesh
+        m = Manifold(Mesh(
+            vert_properties=np.asarray(mesh.vertices, dtype=np.float64),
+            tri_verts=np.asarray(mesh.faces, dtype=np.uint32),
+        ))
+        
+        origin_offset = float(np.dot(normal, origin))
+        
+        top, _ = m.split_by_plane(normal.tolist(), origin_offset)
+        res = _manifold_to_trimesh(top)
+            
+        if len(res.vertices) == 0:
             return 0.0, None, None
+            
+        comps = res.split(only_watertight=False)
+        if not comps:
+            return 0.0, None, None
+            
+        best_comp = comps[0]
+        min_dist = float("inf")
+        for c in comps:
+            dist = float(np.linalg.norm(c.bounding_box.centroid - origin))
+            if dist < min_dist:
+                min_dist = dist
+                best_comp = c
 
-        total_volume = abs(float(mesh.volume)) if mesh.volume is not None else 1.0
-
-        # Se temos pontos do ramo e a mascara nao engloba a malha inteira,
-        # isolar o componente conexo real do apendice
-        if branch_pts is not None and len(branch_pts) > 0 and n_appendage_faces < len(mesh.faces):
-            try:
-                submesh = mesh.submesh([appendage_mask], append=True)
-                comps = submesh.split(only_watertight=False)
-                if comps:
-                    best_comp = None
-                    min_d = float("inf")
-                    for comp in comps:
-                        comp_center = comp.bounding_box.centroid
-                        d = float(np.min(np.linalg.norm(branch_pts - comp_center, axis=1)))
-                        if d < min_d:
-                            min_d = d
-                            best_comp = comp
-                    if best_comp is not None:
-                        b_min = best_comp.bounds[0].tolist()
-                        b_max = best_comp.bounds[1].tolist()
-                        if best_comp.is_watertight and best_comp.volume is not None:
-                            return abs(float(best_comp.volume)), b_min, b_max
-                        return (len(best_comp.faces) / len(mesh.faces)) * total_volume, b_min, b_max
-            except Exception:
-                pass
-
-        volume_ratio = n_appendage_faces / len(mesh.faces)
-        return volume_ratio * total_volume, None, None
-    except Exception:  # noqa: BLE001
+        return float(best_comp.volume), best_comp.bounds[0].tolist(), best_comp.bounds[1].tolist()
+    except Exception:
         return 0.0, None, None
-
 
 def _estimate_appendage_volume(
     mesh: trimesh.Trimesh,
@@ -472,19 +457,168 @@ def suggest_structural_cuts(
     build_plate: list[float] | None = None,
 ) -> StructuralSeparationResult:
     """Extrai esqueleto, detecta apendices e retorna planos estruturais de corte."""
+    import networkx as nx
     skel = extract_skeleton(mesh)
+    raw_graph = skel.get_graph()
+    graph = raw_graph.to_undirected()
+    skel_vertices = np.array(skel.vertices)
+    mesh_center = mesh.bounding_box.centroid
+
+    total_vol = abs(float(mesh.volume)) if mesh.volume is not None else 1.0
+    if total_vol < 1e-9: total_vol = 1.0
+
+    trunk_node = int(np.argmin(np.linalg.norm(skel_vertices - mesh_center, axis=1)))
+    comps = list(nx.connected_components(graph))
+    if not comps:
+        return StructuralSeparationResult(fits=True, cut_planes=[], branch_count=0, filtered_count=0)
+        
+    main_comp = max(comps, key=len)
+    if trunk_node not in main_comp:
+        trunk_node = min(main_comp, key=lambda n: np.linalg.norm(skel_vertices[n] - mesh_center))
+
+    endpoints = [n for n in main_comp if graph.degree(n) == 1 and n != trunk_node]
+    if not endpoints:
+        endpoints = sorted(list(main_comp), key=lambda n: np.linalg.norm(skel_vertices[n] - mesh_center), reverse=True)[:5]
+
+    half_plate = [p / 2.0 for p in build_plate] if build_plate else [50.0, 50.0, 50.0]
+
+    limbs = []
+    for ep in endpoints:
+        try:
+            path = nx.shortest_path(graph, ep, trunk_node)
+        except Exception:
+            continue
+        tip = skel_vertices[ep]
+        dist = float(np.linalg.norm(tip - mesh_center))
+        limbs.append({'ep': ep, 'tip': tip, 'dist': dist, 'path': path, 'path_pts': skel_vertices[path]})
+
+    limbs.sort(key=lambda l: l['dist'], reverse=True)
+    distinct_limbs = []
+    for l in limbs:
+        tip = l['tip']
+        if not any(np.linalg.norm(tip - dl['tip']) < 30.0 for dl in distinct_limbs):
+            distinct_limbs.append(l)
+
+    raw_candidates = []
+    for i, limb in enumerate(distinct_limbs):
+        path_pts = limb['path_pts']
+        tip = limb['tip']
+        n_pts = len(path_pts)
+
+        if n_pts <= 2:
+            mid_pt = (path_pts[0] + path_pts[-1]) / 2.0
+            direction = tip - skel_vertices[trunk_node]
+            d_norm = np.linalg.norm(direction)
+            if d_norm < 1e-6: continue
+            normal = direction / d_norm
+            best_pt = mid_pt
+            best_normal = normal
+        else:
+            outward_vec = tip - skel_vertices[trunk_node]
+            norm_v = np.linalg.norm(outward_vec)
+            outward_normal = outward_vec / norm_v if norm_v > 1e-5 else np.array([0.0, 0.0, 1.0])
+            abs_n = np.abs(outward_normal)
+            max_ax = int(np.argmax(abs_n))
+            if abs_n[max_ax] > 0.70:
+                snapped = np.zeros(3)
+                snapped[max_ax] = np.sign(outward_normal[max_ax])
+                outward_normal = snapped
+
+            # Search near the trunk for bottleneck (shoulder/joint)
+            start_i = max(1, int(n_pts * 0.50))
+            end_i = min(n_pts - 1, int(n_pts * 0.90))
+
+            best_area = float('inf')
+            best_pt = path_pts[n_pts // 2]
+            best_normal = outward_normal
+
+            for s_idx in range(start_i, end_i):
+                pt = path_pts[s_idx]
+                try:
+                    sec = mesh.section(plane_origin=pt, plane_normal=outward_normal)
+                    if sec is not None:
+                        p2d, _ = sec.to_2D()
+                        area = abs(p2d.area)
+                        if 10.0 < area < best_area:
+                            best_area = area
+                            best_pt = pt
+                except Exception:
+                    continue
+
+        vol, b_min, b_max = _estimate_appendage_volume_and_bounds(mesh, best_pt, best_normal, branch_pts=path_pts)
+        ratio = vol / total_vol
+
+        span = 0.0
+        appendage_protrudes = False
+        if b_min and b_max:
+            span = float(np.max(np.array(b_max) - np.array(b_min)))
+            
+            appendage_protrudes = any(
+                abs(b_min[j] - mesh_center[j]) > half_plate[j] or
+                abs(b_max[j] - mesh_center[j]) > half_plate[j]
+                for j in range(3)
+            )
+
+        if ratio > 0.25:
+            continue
+        if not appendage_protrudes and ratio < sensitivity and span < 30.0:
+            continue
+
+        raw_candidates.append({
+            'normal': best_normal.tolist(),
+            'origin': best_pt.tolist(),
+            'structural_group': f'branch-{i}',
+            'volume_ratio': round(ratio, 4),
+            'bbox_min': b_min,
+            'bbox_max': b_max,
+            'branch_pts': path_pts.tolist(),
+            'protrudes': appendage_protrudes,
+        })
+
+    raw_candidates.sort(key=lambda c: (c['protrudes'], c['volume_ratio']), reverse=True)
+
+    clustered = []
+    for rc in raw_candidates:
+        orig = np.array(rc['origin'])
+        norm = np.array(rc['normal'])
+        dup = False
+        for cl in clustered:
+            c_orig = np.array(cl['origin'])
+            c_norm = np.array(cl['normal'])
+            if np.linalg.norm(orig - c_orig) < 25.0 and abs(float(np.dot(norm, c_norm))) > 0.6:
+                dup = True
+                break
+        if not dup:
+            clustered.append(rc)
+
+    selected = []
+    for c in clustered:
+        if c['protrudes']:
+            selected.append(c)
+        elif len(selected) < 3:
+            selected.append(c)
+    selected = selected[:8]
 
     candidates: list[StructuralCutPlane] = []
-    if build_plate is not None:
-        candidates = find_anatomical_oversize_cuts(mesh, skel, build_plate)
+    for idx, c in enumerate(selected):
+        label_map = ['Plano 1', 'Plano 2', 'Plano 3', 'Plano 4', 'Plano 5', 'Plano 6', 'Plano 7', 'Plano 8']
+        label = label_map[idx] if idx < len(label_map) else f'Ramo {idx + 1}'
+        candidates.append(
+            StructuralCutPlane(
+                normal=c['normal'],
+                origin=c['origin'],
+                label=label,
+                source='suggested_structural',
+                structural_group=c['structural_group'],
+                appendage_volume_ratio=c['volume_ratio'],
+                bbox_min=c.get('bbox_min'),
+                bbox_max=c.get('bbox_max'),
+                branch_pts=c.get('branch_pts'),
+            )
+        )
 
-    if not candidates:
-        candidates = find_structural_candidates(skel, mesh, sensitivity)
-
-    graph = skel.get_graph()
     branch_count = sum(1 for _, d in graph.degree() if d >= 3)
-    all_candidates = find_structural_candidates(skel, mesh, 0.0)
-    filtered = len(all_candidates) - len(candidates)
+    filtered = len(raw_candidates) - len(candidates)
 
     return StructuralSeparationResult(
         fits=len(candidates) == 0,
@@ -492,3 +626,6 @@ def suggest_structural_cuts(
         branch_count=branch_count,
         filtered_count=max(0, filtered),
     )
+
+
+

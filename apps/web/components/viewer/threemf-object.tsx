@@ -12,6 +12,13 @@ interface ThreeMFObjectProps {
   onGeometryReady?: (positions: Float32Array) => void;
   /** Opacidade do material (padrão: 1.0). */
   opacity?: number;
+  /**
+   * Se true (padrão), preserva as cores originais do arquivo 3MF (paint_color do Bambu Studio).
+   * Se false, aplica a cor sólida `overrideColor` em todos os meshes.
+   */
+  showOriginalColors?: boolean;
+  /** Cor de override quando showOriginalColors=false. */
+  overrideColor?: string;
 }
 
 /**
@@ -19,14 +26,16 @@ interface ThreeMFObjectProps {
  * O ThreeMFLoader retorna um Object3D (Group com múltiplos meshes).
  * Centra o grupo na origem e reporta a bounding box original.
  *
- * Expõe as posições de vértices concatenadas (de todos os sub-meshes)
- * via onGeometryReady para uso no editor de cortes.
+ * Por padrão, preserva as cores originais do 3MF (pintadas no Bambu Studio).
+ * Isso garante que o usuário veja imediatamente as cores de cada filamento.
  */
 export function ThreeMFObject({
   url,
   onBboxChange,
   onGeometryReady,
   opacity = 1,
+  showOriginalColors = true,
+  overrideColor = "#6366f1",
 }: ThreeMFObjectProps) {
   // ThreeMFLoader retorna THREE.Group
   const group = useLoader(
@@ -54,22 +63,44 @@ export function ThreeMFObject({
     onBboxChange(originalBbox);
   }, [originalBbox, onBboxChange]);
 
-  // Aplicar material padrão (com opacidade configurável)
+  // Aplicar material — preservar cores originais ou aplicar override
   useEffect(() => {
     centeredGroup.traverse((child) => {
       if (child instanceof THREE.Mesh) {
-        child.material = new THREE.MeshStandardMaterial({
-          color: "#6366f1",
-          roughness: 0.45,
-          metalness: 0.1,
-          side: THREE.DoubleSide,
-          transparent: opacity < 1,
-          opacity,
-        });
+        if (showOriginalColors) {
+          // Preservar a cor original do 3MF
+          const existingMat = Array.isArray(child.material)
+            ? child.material[0]
+            : child.material;
+          const existingColor =
+            existingMat instanceof THREE.Material &&
+            "color" in existingMat &&
+            existingMat.color instanceof THREE.Color
+              ? existingMat.color.clone()
+              : new THREE.Color(overrideColor);
+
+          child.material = new THREE.MeshStandardMaterial({
+            color: existingColor,
+            roughness: 0.45,
+            metalness: 0.1,
+            side: THREE.DoubleSide,
+            transparent: opacity < 1,
+            opacity,
+          });
+        } else {
+          child.material = new THREE.MeshStandardMaterial({
+            color: overrideColor,
+            roughness: 0.45,
+            metalness: 0.1,
+            side: THREE.DoubleSide,
+            transparent: opacity < 1,
+            opacity,
+          });
+        }
         child.castShadow = true;
       }
     });
-  }, [centeredGroup, opacity]);
+  }, [centeredGroup, opacity, showOriginalColors, overrideColor]);
 
   // Extrair e concatenar posições de vértices de todos os sub-meshes
   useEffect(() => {

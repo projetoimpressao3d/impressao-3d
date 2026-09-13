@@ -7,6 +7,9 @@ import type { UploadUrlResponse } from "@/types/database";
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
 const ALLOWED_EXTENSIONS = ["stl", "3mf"] as const;
 
+// .zip é aceito como alias de .3mf — ambos são ZIP internamente (formato Bambu Studio)
+const ZIP_ALIASES: Record<string, string> = { zip: "3mf" };
+
 type UploadState =
   | { status: "idle" }
   | { status: "validating" }
@@ -19,6 +22,15 @@ function getExtension(filename: string): string {
   return filename.toLowerCase().split(".").pop() ?? "";
 }
 
+/** Se o arquivo for .zip, cria uma cópia com extensão .3mf */
+function normalizeFile(file: File): File {
+  const ext = getExtension(file.name);
+  const targetExt = ZIP_ALIASES[ext];
+  if (!targetExt) return file;
+  const newName = file.name.slice(0, -(ext.length)) + targetExt;
+  return new File([file], newName, { type: file.type });
+}
+
 export function UploadForm() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -28,7 +40,9 @@ export function UploadForm() {
 
   function validateFile(file: File): string | null {
     const ext = getExtension(file.name);
-    if (!(ALLOWED_EXTENSIONS as readonly string[]).includes(ext)) {
+    // Aceitar a extensão original ou o alias mapeado
+    const resolvedExt = ZIP_ALIASES[ext] ?? ext;
+    if (!(ALLOWED_EXTENSIONS as readonly string[]).includes(resolvedExt)) {
       return `Formato não suportado: .${ext}. Use STL ou 3MF.`;
     }
     if (file.size > MAX_FILE_SIZE_BYTES) {
@@ -43,7 +57,8 @@ export function UploadForm() {
       setState({ status: "error", message: error });
       return;
     }
-    setSelectedFile(file);
+    // Normalizar: .zip → .3mf
+    setSelectedFile(normalizeFile(file));
     setState({ status: "idle" });
   }
 
@@ -139,7 +154,7 @@ export function UploadForm() {
         <input
           ref={fileInputRef}
           type="file"
-          accept=".stl,.3mf"
+          accept=".stl,.3mf,.zip"
           className="hidden"
           onChange={handleInputChange}
         />
@@ -178,10 +193,11 @@ export function UploadForm() {
               Selecionar arquivo
             </button>
             <p className="mt-3 text-xs text-gray-400">
-              Formatos: STL, 3MF · Máximo: 50 MB
+              Formatos: STL, 3MF, ZIP (Bambu Studio) · Máximo: 50 MB
             </p>
           </div>
         )}
+
       </div>
 
       {/* Barra de progresso */}

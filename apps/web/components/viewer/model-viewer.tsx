@@ -16,6 +16,7 @@ import type {
 import { ViewerOverlay } from "./viewer-overlay";
 import { SplitPanel } from "@/components/split/split-panel";
 import { PieceDownload } from "@/components/split/piece-download";
+import { ColorSplitPanel } from "@/components/split/color-split-panel";
 
 // Dynamic import com ssr: false — Three.js NÃO pode rodar no servidor
 const ViewerScene = dynamic(
@@ -231,6 +232,18 @@ export function ModelViewer({
 
   // ── Peças executadas (download) ───────────────────────────────────────
   const [executedPieces, setExecutedPieces] = useState<ExecutedPiece[]>([]);
+
+  // ── Grupos de cor parsados do 3MF (para preview 3D das peças) ─────────
+  const [colorGroups, setColorGroups] = useState<import("@/components/viewer/threemf-colored-object").ColorGroup[]>([]);
+  const [colorPreviewMode, setColorPreviewMode] = useState(false);
+
+  // ── Modo de ferramenta para arquivos 3MF ─────────────────────────────
+  // "colors": separação por cor (ColorSplitPanel)
+  // "linear": corte linear manual (SplitPanel)
+  // Para STL, sempre é "linear" implicitamente.
+  const [toolMode, setToolMode] = useState<"colors" | "linear">(
+    model.format === "3mf" ? "colors" : "linear",
+  );
 
   // ── Vértices do modelo (para cálculo local de bboxes) ────────────────
   const modelPositionsRef = useRef<Float32Array | null>(null);
@@ -675,6 +688,9 @@ export function ModelViewer({
               onCutPlaneMoved={handleCutPlaneMoved}
               onDragEnd={handleDragEnd}
               onGeometryReady={handleGeometryReady}
+              colorPreviewMode={colorPreviewMode}
+              colorGroups={colorGroups}
+              onGroupsParsed={setColorGroups}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-gray-500">
@@ -702,8 +718,80 @@ export function ModelViewer({
         />
       )}
 
-      {/* Painel do editor de cortes */}
-      {splitMode !== "done" && (
+      {/* ── Seletor de modo de ferramenta (apenas para 3MF, quando idle) ── */}
+      {splitMode === "idle" && model.format === "3mf" && (
+        <div className="mt-4 flex gap-2 rounded-xl border border-gray-200 bg-white p-1">
+          <button
+            onClick={() => {
+              setToolMode("colors");
+              setColorPreviewMode(false);
+            }}
+            className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+              toolMode === "colors"
+                ? "bg-violet-600 text-white shadow-sm"
+                : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+            }`}
+          >
+            🎨 Separar por Cores
+          </button>
+          <button
+            onClick={() => setToolMode("linear")}
+            className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+              toolMode === "linear"
+                ? "bg-violet-600 text-white shadow-sm"
+                : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+            }`}
+          >
+            ✂️ Corte Linear
+          </button>
+        </div>
+      )}
+
+      {/* ── Painel de separação por cor ─────────────────────────────────── */}
+      {splitMode === "idle" && model.format === "3mf" && toolMode === "colors" && (
+        <ColorSplitPanel
+          modelId={model.id}
+          modelFormat={model.format}
+          buildPlates={buildPlates}
+          selectedPlateId={selectedPlateId}
+          onPlateChange={setSelectedPlateId}
+          hasSubscription={hasSubscription}
+          onShowPreview={colorGroups.length > 0 ? () => setColorPreviewMode((v) => !v) : undefined}
+          colorPreviewMode={colorPreviewMode}
+        />
+      )}
+
+      {/* ── Painel de corte linear (idle para 3MF com toolMode=linear, ou STL) ── */}
+      {splitMode === "idle" && (model.format !== "3mf" || toolMode === "linear") && (
+        <SplitPanel
+          sessionId={sessionId}
+          splitMode={splitMode}
+          splitError={splitError}
+          cutPlanes={cutPlanes}
+          selectedPlaneId={selectedPlaneId}
+          transformMode={transformMode}
+          pieceBboxes={pieceBboxes}
+          buildPlates={buildPlates}
+          selectedPlateId={selectedPlateId}
+          hasSubscription={hasSubscription}
+          activeView={activeView}
+          onViewChange={setActiveView}
+          separateFeedback={separateFeedback}
+          onStartSplit={handleStartSplit}
+          onAutoSuggest={handleAutoSuggest}
+          onSeparateParts={handleSeparateParts}
+          onAddPlane={handleAddPlane}
+          onRemovePlane={handleRemovePlane}
+          onSelectPlane={setSelectedPlaneId}
+          onSetTransformMode={setTransformMode}
+          onExecute={handleExecute}
+          onCancel={handleCancel}
+          onPlateChange={setSelectedPlateId}
+        />
+      )}
+
+      {/* ── Painel de corte linear em progresso (não-idle) ──────────────── */}
+      {splitMode !== "done" && splitMode !== "idle" && (
         <SplitPanel
           sessionId={sessionId}
           splitMode={splitMode}

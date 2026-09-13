@@ -59,6 +59,26 @@ export async function DELETE(_request: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: "Modelo não encontrado" }, { status: 404 });
   }
 
+  // ── Verificar permissão do plano ─────────────────────────────────────────
+  // Somente usuários Pro podem excluir modelos.
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("plan")
+    .eq("id", user.id)
+    .single();
+
+  if (profile?.plan !== "pro") {
+    return NextResponse.json(
+      {
+        error: "PLAN_LIMIT",
+        message: "A exclusão de modelos está disponível apenas no plano Pro.",
+      },
+      { status: 403 },
+    );
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
+
   const admin = createAdminClient();
 
   // 1. Remover arquivo do Storage

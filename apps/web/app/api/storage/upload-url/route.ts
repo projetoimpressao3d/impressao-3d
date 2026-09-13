@@ -4,6 +4,9 @@ import { createClient, createAdminClient } from "@/lib/supabase/server";
 const ALLOWED_FORMATS = ["stl", "3mf"] as const;
 type AllowedFormat = (typeof ALLOWED_FORMATS)[number];
 
+// .zip é aceito como alias de .3mf (projetos exportados do Bambu Studio)
+const FORMAT_ALIASES: Record<string, string> = { zip: "3mf" };
+
 /**
  * GET /api/storage/upload-url?filename=modelo.stl
  *
@@ -33,17 +36,22 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const ext = filename.toLowerCase().split(".").pop();
+  const rawExt = filename.toLowerCase().split(".").pop();
+  // Resolver alias: .zip → .3mf
+  const ext = (rawExt && FORMAT_ALIASES[rawExt]) ? FORMAT_ALIASES[rawExt] : rawExt;
+
   if (!ext || !(ALLOWED_FORMATS as readonly string[]).includes(ext)) {
     return NextResponse.json(
-      { error: "Formato não suportado. Use STL ou 3MF." },
+      { error: "Formato não suportado. Use STL, 3MF ou ZIP (Bambu Studio)." },
       { status: 400 },
     );
   }
 
-  // 3. Gerar caminho único: {user_id}/{uuid}.{ext}
+  // 3. Gerar caminho único: {user_id}/{uuid}.{ext}  (sempre salva como .3mf se for zip)
   const fileId = crypto.randomUUID();
   const storagePath = `${user.id}/${fileId}.${ext}`;
+
+
 
   // 4. Criar URL assinada de upload via service_role (contorna RLS do Storage)
   const admin = createAdminClient();

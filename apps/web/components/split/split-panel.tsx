@@ -106,52 +106,24 @@ export function SplitPanel({
 
         <div className="rounded-xl border border-gray-200 bg-white p-4">
           {/* Título */}
-          <p className="text-sm font-medium text-gray-800">Ferramentas de divisão</p>
+          <p className="text-sm font-medium text-gray-800">Corte Linear</p>
           <p className="mt-0.5 text-xs text-gray-500">
-            Selecione uma mesa de trabalho e escolha como dividir o modelo.
+            Adicione planos de corte para dividir o modelo em peças que cabem na sua mesa.
           </p>
 
-          {/* Dois botões lado a lado */}
-          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-            {/* Dividir Modelo */}
-            <button
-              onClick={onStartSplit}
-              disabled={!selectedPlateId || buildPlates.length === 0}
-              className="flex-1 rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              ✂️ Dividir Modelo
-            </button>
+          <button
+            onClick={onStartSplit}
+            disabled={!selectedPlateId || buildPlates.length === 0}
+            className="mt-3 w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            ✂️ Iniciar Corte Linear
+          </button>
 
-            {/* Separar Peças */}
-            <div className="flex flex-1 flex-col gap-1.5">
-              <button
-                onClick={() => onSeparateParts(sensitivity / 100)}
-                disabled={!selectedPlateId || buildPlates.length === 0}
-                className="w-full rounded-lg border border-emerald-600 bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-700 shadow-sm transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                🦴 Separar Peças
-              </button>
-              {/* Slider de sensibilidade — visível junto ao botão Separar Peças */}
-              <div className="flex items-center gap-2 px-1">
-                <span className="text-xs text-gray-500 shrink-0">Sensibilidade:</span>
-                <input
-                  type="range"
-                  min={1}
-                  max={30}
-                  step={1}
-                  value={sensitivity}
-                  onChange={(e) => setSensitivity(Number(e.target.value))}
-                  className="flex-1 accent-emerald-600"
-                />
-                <span className="w-9 text-right text-xs font-medium text-emerald-700 shrink-0">
-                  {sensitivity}%
-                </span>
-              </div>
-              <p className="px-1 text-xs text-gray-400">
-                Apêndices com menos de {sensitivity}% do volume serão ignorados.
-              </p>
-            </div>
-          </div>
+          {(!selectedPlateId || buildPlates.length === 0) && (
+            <p className="mt-2 text-center text-xs text-gray-400">
+              Configure uma mesa de trabalho primeiro.
+            </p>
+          )}
         </div>
       </div>
     );
