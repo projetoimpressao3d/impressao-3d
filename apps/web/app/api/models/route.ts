@@ -118,8 +118,8 @@ export async function POST(request: NextRequest) {
 
 /**
  * Chama o mesh-service para analisar a malha 3D de forma assíncrona.
- * Timeout de 5s — se o backend não responder, o job fica como 'pending'
- * e pode ser reprocessado futuramente.
+ * Timeout de 90s — suficiente para o cold start do Render free tier (30-60s)
+ * mais o tempo de análise. Se o backend não responder, o job fica 'pending'.
  */
 async function triggerAnalysis(payload: AnalyzeRequest): Promise<void> {
   const backendUrl = process.env.PYTHON_BACKEND_URL;
@@ -131,7 +131,7 @@ async function triggerAnalysis(payload: AnalyzeRequest): Promise<void> {
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5_000);
+  const timeout = setTimeout(() => controller.abort(), 90_000); // 90s para cold start do Render
 
   try {
     await fetch(`${backendUrl}/analyze`, {
