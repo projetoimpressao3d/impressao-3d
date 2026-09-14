@@ -145,9 +145,16 @@ def _create_download_url(supabase: Client, storage_path: str) -> str:
     response = supabase.storage.from_("models").create_signed_url(
         storage_path, expires_in=300
     )
-    if not response or "signedURL" not in response:
+    # supabase-py 2.x retorna um objeto SignedURLResponse com atributo .signed_url
+    # Versoes antigas retornavam um dict com chave "signedURL"
+    url: str | None = None
+    if hasattr(response, "signed_url"):
+        url = str(response.signed_url)
+    elif isinstance(response, dict):
+        url = response.get("signedURL") or response.get("signedUrl")
+    if not url:
         raise RuntimeError(f"Nao foi possivel gerar URL de download: {response}")
-    return str(response["signedURL"])
+    return url
 
 
 async def _download_file(url: str, storage_path: str) -> str:
