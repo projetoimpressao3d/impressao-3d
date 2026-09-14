@@ -1,4 +1,4 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse, type NextRequest, after } from "next/server";
 import { createClient, createAdminClient } from "@/lib/supabase/server";
 import type { CreateModelRequest, AnalyzeRequest } from "@/types/database";
 
@@ -106,12 +106,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Erro ao salvar modelo" }, { status: 500 });
   }
 
-  // Disparar análise no mesh-service (fire-and-forget, não bloqueia a resposta)
-  // Se falhar, o status é atualizado para "ok" para não deixar o modelo preso
-  void triggerAnalysis({
-    model_id: model.id as string,
-    storage_path: model.storage_path as string,
-    user_id: user.id,
+  // after() garante que triggerAnalysis rode APÓS a resposta ser enviada
+  // e mantém o contexto de execução do Vercel vivo até a chamada completar.
+  // Isso resolve o problema do void (fire-and-forget) ser descartado quando
+  // a função serverless encerra após enviar a resposta 201.
+  after(async () => {
+    await triggerAnalysis({
+      model_id: model.id as string,
+      storage_path: model.storage_path as string,
+      user_id: user.id,
+    });
   });
 
   return NextResponse.json({ model }, { status: 201 });
