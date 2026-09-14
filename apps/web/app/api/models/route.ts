@@ -107,6 +107,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Disparar análise no mesh-service (fire-and-forget, não bloqueia a resposta)
+  // Se falhar, o status é atualizado para "ok" para não deixar o modelo preso
   void triggerAnalysis({
     model_id: model.id as string,
     storage_path: model.storage_path as string,
@@ -117,9 +118,13 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * Chama o mesh-service para analisar a malha 3D de forma assíncrona.
- * Timeout de 90s — suficiente para o cold start do Render free tier (30-60s)
- * mais o tempo de análise. Se o backend não responder, o job fica 'pending'.
+ * Chama o mesh-service para analisar a malha 3D.
+ * Timeout de 90s — suficiente para o cold start do Render free tier (30-60s).
+ *
+ * Se o backend não responder (serviço dormindo, erro de rede, timeout),
+ * o modelo é automaticamente marcado como "ok" para não ficar preso
+ * em "Analisando..." para sempre. O analyze endpoint atualiza o status
+ * correto quando a análise completa com sucesso.
  */
 async function triggerAnalysis(payload: AnalyzeRequest): Promise<void> {
   const backendUrl = process.env.PYTHON_BACKEND_URL;
@@ -131,7 +136,7 @@ async function triggerAnalysis(payload: AnalyzeRequest): Promise<void> {
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 90_000); // 90s para cold start do Render
+  const timeout = setTimeout(() => controller.abort(), 90_000);
 
   try {
     await fetch(`${backendUrl}/analyze`, {
@@ -143,9 +148,21 @@ async function triggerAnalysis(payload: AnalyzeRequest): Promise<void> {
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
-  } catch {
-    // Silenciado intencionalmente: fire-and-forget
-    // O modelo fica com status 'pending' e pode ser reanalisado
+  } catch (err) {
+    // Se o backend não respondeu (cold start expirou, rede, etc.)
+    // marcar o modelo como "ok" para o usuário conseguir usá-lo
+    console.warn(
+      `[triggerAnalysis] Backend não respondeu (${err}). Marcando modelo ${payload.model_id} como ok.`,
+    );
+    try {
+      const admin = createAdminClient();
+      await admin
+        .from("models")
+        .update({ printability_status: "ok" })
+        .eq("id", payload.model_id);
+    } catch (updateErr) {
+      console.error("[triggerAnalysis] Falha ao atualizar status fallback:", updateErr);
+    }
   } finally {
     clearTimeout(timeout);
   }
