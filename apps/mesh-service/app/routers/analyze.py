@@ -176,32 +176,48 @@ def _analyze_with_trimesh(
 ) -> tuple[PrintabilityReport, dict[str, float] | None]:
     """
     Carrega a malha com trimesh e calcula bounding box + printability.
-    Para modelos multi-objeto, pecas separadas sao validas por design — nao verificar watertightness.
+    Usa Scene.bounds para evitar concatenação de geometrias (economiza memória).
+    Para modelos multi-objeto, pecas separadas sao validas por design.
     """
-    mesh_or_scene = trimesh.load(file_path, force="mesh")
+    # process=False evita reconstrução automática da malha (economiza RAM)
+    mesh_or_scene = trimesh.load(file_path, process=False)
+
+    bounding_box: dict[str, float] | None = None
+    mesh: trimesh.Trimesh | None = None
 
     if isinstance(mesh_or_scene, trimesh.Scene):
-        geometries = list(mesh_or_scene.geometry.values())
+        # Bounding box via Scene.bounds — sem concatenar geometrias
+        bounds = mesh_or_scene.bounds
+        if bounds is None:
+            raise ValueError("Arquivo 3D sem geometria mensurável.")
+        extents = bounds[1] - bounds[0]
+        bounding_box = {
+            "x": float(round(float(extents[0]), 3)),
+            "y": float(round(float(extents[1]), 3)),
+            "z": float(round(float(extents[2]), 3)),
+        }
+        # Para verificar watertightness, usa a maior geometria individualmente
+        geometries = [g for g in mesh_or_scene.geometry.values()
+                      if isinstance(g, trimesh.Trimesh) and len(g.faces) > 0]
         if not geometries:
             raise ValueError("Arquivo 3D vazio ou sem geometria.")
-        mesh = trimesh.util.concatenate(geometries)
+        mesh = max(geometries, key=lambda g: len(g.faces))
+
     elif isinstance(mesh_or_scene, trimesh.Trimesh):
         mesh = mesh_or_scene
+        extents: np.ndarray = mesh.extents
+        bounding_box = {
+            "x": float(round(float(extents[0]), 3)),
+            "y": float(round(float(extents[1]), 3)),
+            "z": float(round(float(extents[2]), 3)),
+        }
     else:
         raise ValueError(f"Tipo de geometria nao suportado: {type(mesh_or_scene)}")
 
-    if len(mesh.faces) == 0:
+    if mesh is None or len(mesh.faces) == 0:
         raise ValueError("A malha nao contem faces.")
 
-    extents: np.ndarray = mesh.extents
-    bounding_box = {
-        "x": float(round(extents[0], 3)),
-        "y": float(round(extents[1], 3)),
-        "z": float(round(extents[2], 3)),
-    }
-
     if is_multi_object:
-        # Pecas fisicamente separadas sao validas por design — marcar como valido
         report = PrintabilityReport(
             is_watertight=True, is_volume=True, non_manifold_edge_count=0,
             face_count=int(len(mesh.faces)), vertex_count=int(len(mesh.vertices)),
