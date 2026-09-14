@@ -3,10 +3,12 @@ uvicorn[standard]>=0.32.0
 pydantic>=2.10.0
 pydantic-settings>=2.7.0
 python-dotenv>=1.0.1
-# Análise de malhas 3D — sem extras pesados (pyglet, vhacdx, manifold3d) que não são usados no servidor
+# Análise de malhas 3D — sem extras pesados não usados no servidor
 trimesh>=4.4.0
 numpy>=1.26.0
 scipy>=1.11.0
+# manifold3d: usado diretamente pelo cutter.py (corte linear de malhas)
+manifold3d>=2.5.0
 httpx>=0.28.0
 # Cliente Supabase para atualizar models via service_role
 supabase>=2.9.0
