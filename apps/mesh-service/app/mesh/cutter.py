@@ -19,10 +19,13 @@ Estratégia de corte sequencial (N planos → N+1 peças):
 
 import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 import trimesh
-from manifold3d import Manifold, Mesh
+
+if TYPE_CHECKING:
+    from manifold3d import Manifold
 
 logger = logging.getLogger(__name__)
 
@@ -38,14 +41,15 @@ class CutPlaneInput:
     bbox_max: list[float] | None = field(default=None)
 
 
-def _trimesh_to_manifold(mesh: trimesh.Trimesh) -> Manifold:
+def _trimesh_to_manifold(mesh: trimesh.Trimesh) -> "Manifold":
     """Converte trimesh.Trimesh → manifold3d.Manifold."""
+    from manifold3d import Manifold, Mesh  # lazy import
     verts = np.asarray(mesh.vertices, dtype=np.float64)
     faces = np.asarray(mesh.faces, dtype=np.uint32)
     return Manifold(Mesh(vert_properties=verts, tri_verts=faces))
 
 
-def _manifold_to_trimesh(m: Manifold) -> trimesh.Trimesh:
+def _manifold_to_trimesh(m: "Manifold") -> trimesh.Trimesh:
     """Converte manifold3d.Manifold → trimesh.Trimesh."""
     result = m.to_mesh()
     verts = np.asarray(result.vert_properties)[:, :3]

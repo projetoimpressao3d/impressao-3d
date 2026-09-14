@@ -5,20 +5,17 @@ pydantic-settings>=2.7.0
 python-dotenv>=1.0.1
 
 # Análise de malhas 3D
-# Dependências do trimesh[easy] relevantes para o servidor
-# (excluídos: pyglet, embreex, vhacdx — apenas para renderização/decomposição visual)
 trimesh>=4.4.0
 numpy>=1.26.0
-scipy>=1.11.0
 networkx>=3.0
 lxml>=5.0.0
 colorlog>=6.0.0
 charset-normalizer>=3.0.0
 jsonschema>=4.0.0
-shapely>=2.0.0
 xxhash>=3.0.0
 pillow>=10.0.0
 mapbox_earcut>=1.0.2
+# manifold3d: corte linear de malhas (carregado sob demanda via lazy import)
 manifold3d>=2.5.0
 
 httpx>=0.28.0
