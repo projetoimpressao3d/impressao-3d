@@ -7,6 +7,7 @@ python-dotenv>=1.0.1
 trimesh>=4.4.0
 numpy>=1.26.0
 scipy>=1.11.0
+networkx>=3.0
 # manifold3d: usado diretamente pelo cutter.py (corte linear de malhas)
 manifold3d>=2.5.0
 httpx>=0.28.0
