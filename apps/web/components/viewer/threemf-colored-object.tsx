@@ -115,17 +115,18 @@ function calcBBox(positions: Float32Array): {
  *
  *  Regras por par (first, second):
  *    (4, 3) → 3 (Red)   — "1C": fogo
- *    (4, 7) → 5 (White) — "3C": garras (19 clusters isolados) + olhos
- *    (4, _) → 4 (Blue)  — "2C": membrana asa, "0C": íris
+ *    (4, 7) → 5 (White) — "3C": garras (19 clusters isolados) + olhos brancos
+ *    (4, 1) → 2 (Black) — "0C": pupila/bola do olho (exclusivamente área ocular)
+ *    (4, _) → 4 (Blue)  — "2C": membrana asa
  *    (6, _) → 5 (White) — estado fora de range → White (ponta de garras)
  *    (N, _) → N         — outros
  *
  *  Padrões confirmados:
  *    "4"  [4]       → Blue  (asa interior)
  *    "2C" [4,5]     → Blue  (membrana asa)
- *    "3C" [4,SPLIT] → White (garras + olhos)
+ *    "3C" [4,SPLIT] → White (garras + olhos brancos)
  *    "1C" [4,3]     → Red   (fogo)
- *    "0C" [4,1]     → Blue  (íris)
+ *    "0C" [4,1]     → Black (pupila/bola do olho)
  *    "8"  [0→1]     → Cream (barriga)
  */
 function paintColorToExtruder(pc: string | null, useNewFormat: boolean): number {
@@ -152,7 +153,8 @@ function paintColorToExtruder(pc: string | null, useNewFormat: boolean): number 
     if (first === 4) {
       if (second === 3) return 3;    // "1C"[4,3] → Red (fogo)
       if (second === 7) return 5;    // "3C"[4,SPLIT] → White (garras+olhos)
-      return 4;                      // "2C","0C","4" → Blue
+      if (second === 1) return 2;    // "0C"[4,1] → Black (pupila)
+      return 4;                      // "2C","4" → Blue (membrana asa)
     }
     if (first === 6) return 5;       // estado fora de range → White
     return first;
@@ -548,12 +550,12 @@ function ColorMesh({ group, renderOrder }: { group: ColorGroup; renderOrder: num
         color={color}
         roughness={0.55}
         metalness={0.0}
-        side={THREE.FrontSide}
+        side={THREE.DoubleSide}
       />
     </mesh>
   );
-
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Componente principal exportado

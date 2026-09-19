@@ -114,7 +114,9 @@ def _paint_color_to_extruder(pc_str: str | None, use_new_format: bool = False) -
                 return 3
             if second == 7:   # "3C" [4,SPLIT] → White (garras + olhos)
                 return 5
-            # "2C"[4,5], "0C"[4,1], "4"[4,-1] → Blue (membrana/íris)
+            if second == 1:   # "0C" [4,1] → Black (pupila/bola do olho)
+                return 2
+            # "2C"[4,5], "4"[4,-1] → Blue (membrana asa)
             return 4
 
         if first == 6:        # estado 6 fora de range → White (ponta de garras)
