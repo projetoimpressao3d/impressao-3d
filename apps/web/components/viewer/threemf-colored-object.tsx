@@ -109,17 +109,32 @@ function calcBBox(positions: Float32Array): {
 /** paint_color hex string → índice de extruder 0-based.
  *  Dois formatos:
  *  - Antigo (decimal): valores como "4", "16" → fórmula: max(0, bitPos - 1)
- *  - Novo Bambu hex: valores com A-F como "3C", "1C" → fórmula: bitPos + 1
+ *  - Novo Bambu TriangleSelector (hex): cascade de 3 bits a partir do LSB.
+ *    Estado = 0-indexed ext (0=laranja, 1=creme, 2=preto, 3=vermelho, 4=azul, 5=branco).
+ *    Usa BigInt para suportar strings hex longas (> 32 bits).
  */
 function paintColorToExtruder(pc: string | null, useNewFormat: boolean): number {
   if (!pc) return 0;
+  if (useNewFormat) {
+    // Bambu TriangleSelector: cascade 3-bit LSB
+    // state diretamente = índice de extrusor 0-based; 0=NONE, 7=SPLIT
+    try {
+      let val = BigInt('0x' + pc);
+      while (val > 0n) {
+        const state = val & 7n;
+        val >>= 3n;
+        if (state === 0n || state === 7n) continue;   // NONE ou SPLIT — pula
+        return Number(state);
+      }
+    } catch { /* string inválida */ }
+    return 0;
+  }
+  // Formato antigo: bitmask decimal
   const val = parseInt(pc, 16);
   if (!val) return 0;
   const lowestBit = val & -val;
-  const bitPos = Math.log2(lowestBit);   // posição 0-indexed do bit mais baixo
-  return useNewFormat
-    ? bitPos + 1                          // Bambu hex format
-    : Math.max(0, bitPos - 1);            // formato antigo
+  const bitPos = Math.log2(lowestBit);
+  return Math.max(0, bitPos - 1);
 }
 
 function parsePainted(xmlText: string, filamentColors: string[]): ParseResult {

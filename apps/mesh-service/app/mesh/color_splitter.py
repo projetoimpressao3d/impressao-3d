@@ -57,19 +57,34 @@ def _paint_color_to_extruder(pc_str: str | None, use_new_format: bool = False) -
     Dois formatos suportados:
       - Formato antigo (decimal): valores como "4", "16", "64"
         Fórmula: max(0, bit_position_do_menor_bit - 1)
-      - Formato novo Bambu hex: valores como "4", "8", "3C", "1C"
-        Fórmula: bit_position_do_menor_bit + 1
-        Detectado quando o arquivo contém paint_color com chars A-F.
+      - Formato novo Bambu TriangleSelector (hex): valores como "4", "8", "3C", "1C"
+        Codificação: grupos de 3 bits do LSB, estado = índice de extrusor 0-based.
+        0=NONE(padrão), 1=ext1, 2=ext2, ..., 6=ext6, 7=SPLIT(tem filhos).
+        Pula grupos NONE(0) e SPLIT(7) e retorna o primeiro estado válido.
     """
     if not pc_str:
         return 0
-    val = int(pc_str, 16)   # sempre parsear como hex (valores decimais puros são iguais)
+    val = int(pc_str, 16)   # suporta tanto decimal puro quanto hex completo
     if val == 0:
         return 0
-    trailing = (val & -val).bit_length() - 1   # posição do bit mais baixo (0-indexed)
+
     if use_new_format:
-        return trailing + 1   # Bambu hex: bit_position + 1
-    return max(0, trailing - 1)   # formato antigo
+        # Bambu TriangleSelector: cascade 3-bit LSB
+        # O estado é diretamente o índice de extrusor 0-based
+        SPLIT = 7
+        while val > 0:
+            state = val & 7      # 3 bits menos significativos
+            val >>= 3            # próximo grupo
+            if state == 0:       # NONE — pula
+                continue
+            if state == SPLIT:   # SPLIT — tem filhos, continua
+                continue
+            return state         # estado = índice de extrusor (0=laranja, 1=creme, ...)
+        return 0
+
+    # Formato antigo: bitmask decimal
+    trailing = (val & -val).bit_length() - 1
+    return max(0, trailing - 1)
 
 
 def _read_filament_colors(zip_file: zipfile.ZipFile) -> list:
