@@ -99,11 +99,15 @@ def _paint_color_to_extruder(pc_str: str | None, use_new_format: bool = False) -
         if first == -1:
             return 0
 
-        # Se o primeiro estado é Blue (4) e existe um segundo estado,
-        # o segundo é a cor real da folha nessa subregião.
-        if first == 4 and second != -1:
-            return second
+        # Caso especial: primeiro estado = 4 (Blue, contexto de asa/braço) E
+        # segundo estado = 3 (Red, fogo) → a subregião real é vermelha.
+        # Exemplos: "1C" avg_y=+62 (fundo do braço esq, fogo) → Red ✓
+        # Para segundo=1(Cream) ou segundo=5(White): o primeiro Blue É a cor real
+        # da membrana (ex: "2C" avg_y=-3, frente das asas → Blue ✓).
+        if first == 4 and second == 3:
+            return 3   # fogo / detalhe vermelho
         return first
+
 
     # Formato antigo: bitmask decimal
     trailing = (val & -val).bit_length() - 1

@@ -111,14 +111,14 @@ function calcBBox(positions: Float32Array): {
  *  - Antigo (decimal): max(0, bitPos - 1)
  *  - Novo Bambu TriangleSelector: grupos de 3 bits do LSB.
  *
- *  Regra: se primeiro estado válido = 4 (Blue, contexto de asa) E existe segundo
- *  estado válido → usa o segundo (cor real da subregião).
- *  Ex: "1C"→Red, "2C"→White, "0C"→Cream, "4"→Blue, "3C"→Blue, "8"→Cream.
+ *  Regra: se primeiro estado = 4 (Blue, contexto de asa) E segundo = 3 (Red,
+ *  fogo) → usa Red. Caso contrário usa o primeiro estado (Blue para membrana,
+ *  Cream para barriga, etc.)
+ *  Ex: "1C"→Red ✓, "2C"→Blue (membrana asa ✓), "0C"→Blue (olho ✓), "8"→Cream ✓
  */
 function paintColorToExtruder(pc: string | null, useNewFormat: boolean): number {
   if (!pc) return 0;
   if (useNewFormat) {
-    // Usa os últimos 13 hex chars (52 bits < 2^53, seguro sem BigInt)
     const safe = pc.length > 13 ? pc.slice(-13) : pc;
     let val = parseInt(safe, 16);
     let first = -1;
@@ -126,7 +126,7 @@ function paintColorToExtruder(pc: string | null, useNewFormat: boolean): number 
     while (val > 0) {
       const state = val % 8;
       val = Math.floor(val / 8);
-      if (state === 0 || state === 7) continue;   // NONE ou SPLIT — pula
+      if (state === 0 || state === 7) continue;
       if (first === -1) {
         first = state;
       } else {
@@ -135,8 +135,8 @@ function paintColorToExtruder(pc: string | null, useNewFormat: boolean): number 
       }
     }
     if (first === -1) return 0;
-    // Primeiro=Blue(4) + segundo válido → o segundo é a cor real da subregião
-    if (first === 4 && second !== -1) return second;
+    // Apenas quando primeiro=Blue(4) E segundo=Red(3): usar Red (fogo)
+    if (first === 4 && second === 3) return 3;
     return first;
   }
   // Formato antigo: bitmask decimal
@@ -146,6 +146,7 @@ function paintColorToExtruder(pc: string | null, useNewFormat: boolean): number 
   const bitPos = Math.log2(lowestBit);
   return Math.max(0, bitPos - 1);
 }
+
 
 
 function parsePainted(xmlText: string, filamentColors: string[]): ParseResult {
