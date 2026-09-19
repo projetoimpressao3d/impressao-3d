@@ -107,27 +107,37 @@ function calcBBox(positions: Float32Array): {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** paint_color hex string → índice de extruder 0-based.
- *  Dois formatos:
- *  - Antigo (decimal): valores como "4", "16" → fórmula: max(0, bitPos - 1)
- *  - Novo Bambu TriangleSelector (hex): cascade de 3 bits a partir do LSB.
- *    Estado = 0-indexed ext (0=laranja, 1=creme, 2=preto, 3=vermelho, 4=azul, 5=branco).
- *    Usa os últimos 13 chars hex (52 bits, seguro em JS sem BigInt).
+ *  Formatos:
+ *  - Antigo (decimal): max(0, bitPos - 1)
+ *  - Novo Bambu TriangleSelector: grupos de 3 bits do LSB.
+ *
+ *  Regra: se primeiro estado válido = 4 (Blue, contexto de asa) E existe segundo
+ *  estado válido → usa o segundo (cor real da subregião).
+ *  Ex: "1C"→Red, "2C"→White, "0C"→Cream, "4"→Blue, "3C"→Blue, "8"→Cream.
  */
 function paintColorToExtruder(pc: string | null, useNewFormat: boolean): number {
   if (!pc) return 0;
   if (useNewFormat) {
-    // Bambu TriangleSelector: cascade 3-bit LSB
-    // Usa os últimos 13 chars hex = 52 bits (< 2^53, seguro para JS Number)
-    // O primeiro estado válido está sempre nos bits baixos do valor
+    // Usa os últimos 13 hex chars (52 bits < 2^53, seguro sem BigInt)
     const safe = pc.length > 13 ? pc.slice(-13) : pc;
     let val = parseInt(safe, 16);
+    let first = -1;
+    let second = -1;
     while (val > 0) {
-      const state = val % 8;           // 3 bits do LSB (seguro para números grandes)
-      val = Math.floor(val / 8);       // próximo grupo de 3 bits
+      const state = val % 8;
+      val = Math.floor(val / 8);
       if (state === 0 || state === 7) continue;   // NONE ou SPLIT — pula
-      return state;                    // estado = índice de extrusor diretamente
+      if (first === -1) {
+        first = state;
+      } else {
+        second = state;
+        break;
+      }
     }
-    return 0;
+    if (first === -1) return 0;
+    // Primeiro=Blue(4) + segundo válido → o segundo é a cor real da subregião
+    if (first === 4 && second !== -1) return second;
+    return first;
   }
   // Formato antigo: bitmask decimal
   const val = parseInt(pc, 16);
@@ -136,6 +146,7 @@ function paintColorToExtruder(pc: string | null, useNewFormat: boolean): number 
   const bitPos = Math.log2(lowestBit);
   return Math.max(0, bitPos - 1);
 }
+
 
 function parsePainted(xmlText: string, filamentColors: string[]): ParseResult {
   const vertRe = /<vertex x="([^"]+)" y="([^"]+)" z="([^"]+)"/g;

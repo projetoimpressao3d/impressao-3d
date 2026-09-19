@@ -57,30 +57,53 @@ def _paint_color_to_extruder(pc_str: str | None, use_new_format: bool = False) -
     Dois formatos suportados:
       - Formato antigo (decimal): valores como "4", "16", "64"
         Fórmula: max(0, bit_position_do_menor_bit - 1)
-      - Formato novo Bambu TriangleSelector (hex): valores como "4", "8", "3C", "1C"
-        Codificação: grupos de 3 bits do LSB, estado = índice de extrusor 0-based.
-        0=NONE(padrão), 1=ext1, 2=ext2, ..., 6=ext6, 7=SPLIT(tem filhos).
-        Pula grupos NONE(0) e SPLIT(7) e retorna o primeiro estado válido.
+      - Formato novo Bambu TriangleSelector (hex): grupos de 3 bits do LSB.
+        Estado 0=NONE(padrão), 1-6=extrusores, 7=SPLIT.
+
+        Regra de decodificação:
+          1. Lê grupos de 3 bits do LSB, pulando NONE(0) e SPLIT(7).
+          2. Encontrado o PRIMEIRO estado válido:
+             - Se for 4 (Blue, contexto de asa) E existir um SEGUNDO estado válido:
+               → usa o SEGUNDO (cor real da subregião — garras, fogo, etc.)
+             - Caso contrário: usa o PRIMEIRO estado.
+
+        Padrões do arquivo:
+          "4"  → só estado 4 (Blue)           → Blue ✓
+          "3C" → estado 4 + SPLIT (sem 2º)    → Blue ✓
+          "0C" → estados [4, 1]               → Cream (barriga/detalhes)
+          "1C" → estados [4, 3]               → Red (fogo/braço esq)
+          "2C" → estados [4, 5]               → White (garras/olhos)
     """
     if not pc_str:
         return 0
-    val = int(pc_str, 16)   # suporta tanto decimal puro quanto hex completo
+    val = int(pc_str, 16)
     if val == 0:
         return 0
 
     if use_new_format:
-        # Bambu TriangleSelector: cascade 3-bit LSB
-        # O estado é diretamente o índice de extrusor 0-based
         SPLIT = 7
-        while val > 0:
-            state = val & 7      # 3 bits menos significativos
-            val >>= 3            # próximo grupo
-            if state == 0:       # NONE — pula
+        first = -1
+        second = -1
+        temp = val
+        while temp > 0:
+            s = temp & 7
+            temp >>= 3
+            if s == 0 or s == SPLIT:   # NONE ou SPLIT — pula
                 continue
-            if state == SPLIT:   # SPLIT — tem filhos, continua
-                continue
-            return state         # estado = índice de extrusor (0=laranja, 1=creme, ...)
-        return 0
+            if first == -1:
+                first = s
+            else:
+                second = s
+                break  # basta o segundo estado válido
+
+        if first == -1:
+            return 0
+
+        # Se o primeiro estado é Blue (4) e existe um segundo estado,
+        # o segundo é a cor real da folha nessa subregião.
+        if first == 4 and second != -1:
+            return second
+        return first
 
     # Formato antigo: bitmask decimal
     trailing = (val & -val).bit_length() - 1
