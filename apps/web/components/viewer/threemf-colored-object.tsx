@@ -539,10 +539,11 @@ function ColorMesh({ group, renderOrder }: { group: ColorGroup; renderOrder: num
   if (group.isBase) {
     return (
       <mesh geometry={group.geometry} renderOrder={0} castShadow receiveShadow>
-        <meshStandardMaterial color={color} roughness={0.55} metalness={0.0} side={THREE.FrontSide} />
+        <meshStandardMaterial color={color} roughness={0.55} metalness={0.0} side={THREE.DoubleSide} />
       </mesh>
     );
   }
+
 
   return (
     <mesh geometry={group.geometry} renderOrder={renderOrder}>
