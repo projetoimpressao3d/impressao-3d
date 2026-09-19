@@ -107,36 +107,54 @@ function calcBBox(positions: Float32Array): {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** paint_color hex string → índice de extruder 0-based.
- *  Formatos:
- *  - Antigo (decimal): max(0, bitPos - 1)
- *  - Novo Bambu TriangleSelector: grupos de 3 bits do LSB.
  *
- *  Regra: se primeiro estado = 4 (Blue, contexto de asa) E segundo = 3 (Red,
- *  fogo) → usa Red. Caso contrário usa o primeiro estado (Blue para membrana,
- *  Cream para barriga, etc.)
- *  Ex: "1C"→Red ✓, "2C"→Blue (membrana asa ✓), "0C"→Blue (olho ✓), "8"→Cream ✓
+ *  Algoritmo (descoberto por análise de conectividade dos triângulos):
+ *
+ *  Formato Bambu TriangleSelector: grupos de 3 bits do LSB.
+ *  Estado 0=NONE, 1-6=extrusores, 7=SPLIT.
+ *
+ *  Regras por par (first, second):
+ *    (4, 3) → 3 (Red)   — "1C": fogo
+ *    (4, 7) → 5 (White) — "3C": garras (19 clusters isolados) + olhos
+ *    (4, _) → 4 (Blue)  — "2C": membrana asa, "0C": íris
+ *    (6, _) → 5 (White) — estado fora de range → White (ponta de garras)
+ *    (N, _) → N         — outros
+ *
+ *  Padrões confirmados:
+ *    "4"  [4]       → Blue  (asa interior)
+ *    "2C" [4,5]     → Blue  (membrana asa)
+ *    "3C" [4,SPLIT] → White (garras + olhos)
+ *    "1C" [4,3]     → Red   (fogo)
+ *    "0C" [4,1]     → Blue  (íris)
+ *    "8"  [0→1]     → Cream (barriga)
  */
 function paintColorToExtruder(pc: string | null, useNewFormat: boolean): number {
   if (!pc) return 0;
   if (useNewFormat) {
     const safe = pc.length > 13 ? pc.slice(-13) : pc;
     let val = parseInt(safe, 16);
+    if (!val) return 0;
     let first = -1;
     let second = -1;
     while (val > 0) {
       const state = val % 8;
       val = Math.floor(val / 8);
-      if (state === 0 || state === 7) continue;
       if (first === -1) {
+        if (state === 0) continue;   // NONE na pos 1 → pula
         first = state;
       } else {
-        second = state;
+        if (state === 0) continue;   // NONE na pos 2 → pula
+        second = state;              // guarda SPLIT(7) sem pular
         break;
       }
     }
     if (first === -1) return 0;
-    // Apenas quando primeiro=Blue(4) E segundo=Red(3): usar Red (fogo)
-    if (first === 4 && second === 3) return 3;
+    if (first === 4) {
+      if (second === 3) return 3;    // "1C"[4,3] → Red (fogo)
+      if (second === 7) return 5;    // "3C"[4,SPLIT] → White (garras+olhos)
+      return 4;                      // "2C","0C","4" → Blue
+    }
+    if (first === 6) return 5;       // estado fora de range → White
     return first;
   }
   // Formato antigo: bitmask decimal
@@ -530,14 +548,11 @@ function ColorMesh({ group, renderOrder }: { group: ColorGroup; renderOrder: num
         color={color}
         roughness={0.55}
         metalness={0.0}
-        side={THREE.DoubleSide}
-        depthWrite={false}
-        polygonOffset
-        polygonOffsetFactor={-renderOrder}
-        polygonOffsetUnits={-renderOrder}
+        side={THREE.FrontSide}
       />
     </mesh>
   );
+
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

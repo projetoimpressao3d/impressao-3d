@@ -60,19 +60,25 @@ def _paint_color_to_extruder(pc_str: str | None, use_new_format: bool = False) -
       - Formato novo Bambu TriangleSelector (hex): grupos de 3 bits do LSB.
         Estado 0=NONE(padrão), 1-6=extrusores, 7=SPLIT.
 
-        Regra de decodificação:
-          1. Lê grupos de 3 bits do LSB, pulando NONE(0) e SPLIT(7).
-          2. Encontrado o PRIMEIRO estado válido:
-             - Se for 4 (Blue, contexto de asa) E existir um SEGUNDO estado válido:
-               → usa o SEGUNDO (cor real da subregião — garras, fogo, etc.)
-             - Caso contrário: usa o PRIMEIRO estado.
+        Algoritmo de decodificação (descoberto por análise de componentes):
+          1. Lê grupos de 3 bits do LSB, pulando apenas NONE(0) para o primeiro estado.
+          2. O SEGUNDO estado é lido sem pular SPLIT (queremos detectá-lo).
+          3. Regras por par (first, second):
+             (4, 3) → Red   — "1C": fogo/braço esq (avg_y=+62, fundo esq)
+             (4, 7) → White — "3C": garras (mãos/pés) + fundo do olho
+                              (19 componentes isolados confirmados por conectividade)
+             (4, _) → Blue  — "2C" memb. asa, "0C" íris, "4" asa pura
+             (1, _) → Cream — "8": barriga
+             (6, _) → White — ponta de garras (estado fora de range → White)
+             (N, _) → N     — outros (estado 2=Black pupila, etc.)
 
-        Padrões do arquivo:
-          "4"  → só estado 4 (Blue)           → Blue ✓
-          "3C" → estado 4 + SPLIT (sem 2º)    → Blue ✓
-          "0C" → estados [4, 1]               → Cream (barriga/detalhes)
-          "1C" → estados [4, 3]               → Red (fogo/braço esq)
-          "2C" → estados [4, 5]               → White (garras/olhos)
+        Padrões confirmados por análise espacial + conectividade:
+          "4"  [4]       → Blue  ✓ (asa interior, 11.610 tri)
+          "2C" [4, 5]    → Blue  ✓ (membrana asa, 2 comps x 4k tri)
+          "3C" [4, SPLIT]→ White ✓ (19 comps isolados = garras + olhos, 6.773 tri)
+          "1C" [4, 3]    → Red   ✓ (fogo braço esq, 9.091 tri)
+          "0C" [4, 1]    → Blue  ✓ (íris azul, 475 tri na região ocular)
+          "8"  [0→1]     → Cream ✓ (barriga, 12.181 tri)
     """
     if not pc_str:
         return 0
@@ -83,35 +89,43 @@ def _paint_color_to_extruder(pc_str: str | None, use_new_format: bool = False) -
     if use_new_format:
         SPLIT = 7
         first = -1
-        second = -1
+        second = -1   # pode ser SPLIT — não pulamos na posição 2
         temp = val
         while temp > 0:
             s = temp & 7
             temp >>= 3
-            if s == 0 or s == SPLIT:   # NONE ou SPLIT — pula
-                continue
             if first == -1:
+                if s == 0:        # NONE na posição do primeiro → pula
+                    continue
                 first = s
             else:
-                second = s
-                break  # basta o segundo estado válido
+                # Capturamos o próximo grupo sem filtrar SPLIT:
+                # precisamos distinguir "3C"=[4,SPLIT]→White de "2C"=[4,5]→Blue
+                if s == 0:        # NONE na posição do segundo → pula
+                    continue
+                second = s        # guarda (pode ser SPLIT=7 ou outro estado)
+                break
 
         if first == -1:
             return 0
 
-        # Caso especial: primeiro estado = 4 (Blue, contexto de asa/braço) E
-        # segundo estado = 3 (Red, fogo) → a subregião real é vermelha.
-        # Exemplos: "1C" avg_y=+62 (fundo do braço esq, fogo) → Red ✓
-        # Para segundo=1(Cream) ou segundo=5(White): o primeiro Blue É a cor real
-        # da membrana (ex: "2C" avg_y=-3, frente das asas → Blue ✓).
-        if first == 4 and second == 3:
-            return 3   # fogo / detalhe vermelho
-        return first
+        if first == 4:
+            if second == 3:   # "1C" [4,3] → Red (fogo)
+                return 3
+            if second == 7:   # "3C" [4,SPLIT] → White (garras + olhos)
+                return 5
+            # "2C"[4,5], "0C"[4,1], "4"[4,-1] → Blue (membrana/íris)
+            return 4
 
+        if first == 6:        # estado 6 fora de range → White (ponta de garras)
+            return 5
+
+        return first
 
     # Formato antigo: bitmask decimal
     trailing = (val & -val).bit_length() - 1
     return max(0, trailing - 1)
+
 
 
 def _read_filament_colors(zip_file: zipfile.ZipFile) -> list:
