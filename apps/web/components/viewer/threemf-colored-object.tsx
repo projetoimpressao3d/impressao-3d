@@ -111,22 +111,22 @@ function calcBBox(positions: Float32Array): {
  *  - Antigo (decimal): valores como "4", "16" → fórmula: max(0, bitPos - 1)
  *  - Novo Bambu TriangleSelector (hex): cascade de 3 bits a partir do LSB.
  *    Estado = 0-indexed ext (0=laranja, 1=creme, 2=preto, 3=vermelho, 4=azul, 5=branco).
- *    Usa BigInt para suportar strings hex longas (> 32 bits).
+ *    Usa os últimos 13 chars hex (52 bits, seguro em JS sem BigInt).
  */
 function paintColorToExtruder(pc: string | null, useNewFormat: boolean): number {
   if (!pc) return 0;
   if (useNewFormat) {
     // Bambu TriangleSelector: cascade 3-bit LSB
-    // state diretamente = índice de extrusor 0-based; 0=NONE, 7=SPLIT
-    try {
-      let val = BigInt('0x' + pc);
-      while (val > 0n) {
-        const state = val & 7n;
-        val >>= 3n;
-        if (state === 0n || state === 7n) continue;   // NONE ou SPLIT — pula
-        return Number(state);
-      }
-    } catch { /* string inválida */ }
+    // Usa os últimos 13 chars hex = 52 bits (< 2^53, seguro para JS Number)
+    // O primeiro estado válido está sempre nos bits baixos do valor
+    const safe = pc.length > 13 ? pc.slice(-13) : pc;
+    let val = parseInt(safe, 16);
+    while (val > 0) {
+      const state = val % 8;           // 3 bits do LSB (seguro para números grandes)
+      val = Math.floor(val / 8);       // próximo grupo de 3 bits
+      if (state === 0 || state === 7) continue;   // NONE ou SPLIT — pula
+      return state;                    // estado = índice de extrusor diretamente
+    }
     return 0;
   }
   // Formato antigo: bitmask decimal
