@@ -106,16 +106,28 @@ function calcBBox(positions: Float32Array): {
 // MÉTODO A: paint_color por triângulo (Charizard / AMS painted)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** paint_color bitmask → índice de extruder 0-based */
-function paintColorToExtruder(pc: number | null): number {
+/** paint_color hex string → índice de extruder 0-based.
+ *  Dois formatos:
+ *  - Antigo (decimal): valores como "4", "16" → fórmula: max(0, bitPos - 1)
+ *  - Novo Bambu hex: valores com A-F como "3C", "1C" → fórmula: bitPos + 1
+ */
+function paintColorToExtruder(pc: string | null, useNewFormat: boolean): number {
   if (!pc) return 0;
-  const lowestBit = pc & -pc;
-  return Math.max(0, Math.log2(lowestBit) - 1);
+  const val = parseInt(pc, 16);
+  if (!val) return 0;
+  const lowestBit = val & -val;
+  const bitPos = Math.log2(lowestBit);   // posição 0-indexed do bit mais baixo
+  return useNewFormat
+    ? bitPos + 1                          // Bambu hex format
+    : Math.max(0, bitPos - 1);            // formato antigo
 }
 
 function parsePainted(xmlText: string, filamentColors: string[]): ParseResult {
   const vertRe = /<vertex x="([^"]+)" y="([^"]+)" z="([^"]+)"/g;
-  const triRe  = /<triangle v1="(\d+)" v2="(\d+)" v3="(\d+)"(?:[^/\n>]*paint_color="(\d+)")?/g;
+  const triRe  = /<triangle v1="(\d+)" v2="(\d+)" v3="(\d+)"(?:[^/\n>]*paint_color="([0-9A-Fa-f]+)")?/g;
+
+  // Detectar formato Bambu hex (tem chars A-F nos valores de paint_color)
+  const useNewFormat = /paint_color="[0-9]*[A-Fa-f][0-9A-Fa-f]*"/.test(xmlText);
 
   const rawVerts: number[] = [];
   for (const m of xmlText.matchAll(vertRe)) {
@@ -124,8 +136,8 @@ function parsePainted(xmlText: string, filamentColors: string[]): ParseResult {
 
   const facesByExt = new Map<number, number[][]>();
   for (const m of xmlText.matchAll(triRe)) {
-    const pc  = m[4] !== undefined ? parseInt(m[4]) : null;
-    const ext = paintColorToExtruder(pc);
+    const pcStr = m[4] !== undefined ? m[4] : null;
+    const ext   = paintColorToExtruder(pcStr, useNewFormat);
     if (!facesByExt.has(ext)) facesByExt.set(ext, []);
     facesByExt.get(ext)!.push([parseInt(m[1]), parseInt(m[2]), parseInt(m[3])]);
   }
@@ -389,10 +401,8 @@ function detectMethod(
     const hasParts    = /<part id="/.test(modelSettingsXml);
     const hasExtruder = /key="extruder"/.test(modelSettingsXml);
     if (hasParts && hasExtruder) {
-      // Verificar se a geometria tem paint_color (poderia ser híbrido)
-      // Verificar apenas os primeiros 50KB para eficiência
-      const sample = objXml.substring(0, 50000);
-      const hasPaintColor = /paint_color="\d+"/.test(sample);
+      // Verificar paint_color no conteúdo inteiro — os primeiros 50KB são só vértices
+      const hasPaintColor = /paint_color="[0-9A-Fa-f]+"/.test(objXml);
       if (!hasPaintColor) return "multi_object";
     }
   }

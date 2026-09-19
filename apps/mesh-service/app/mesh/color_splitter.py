@@ -15,7 +15,7 @@ import trimesh
 logger = logging.getLogger(__name__)
 
 RE_VERTEX       = re.compile(r'<vertex x="([^"]+)" y="([^"]+)" z="([^"]+)"')
-RE_TRIANGLE     = re.compile(r'<triangle v1="(\d+)" v2="(\d+)" v3="(\d+)"(?:[^>]*paint_color="(\d+)")?')
+RE_TRIANGLE     = re.compile(r'<triangle v1="(\d+)" v2="(\d+)" v3="(\d+)"(?:[^>]*paint_color="([0-9A-Fa-f]+)")?')
 RE_FILAMENT_CLR = re.compile(r'"filament_colour"\s*:\s*\[([^\]]+)\]')
 RE_HEX_COLOR    = re.compile(r'"(#[0-9A-Fa-f]{6})"')
 RE_PART         = re.compile(r'<part id="(\d+)"[^>]*>([\s\S]*?)</part>')
@@ -50,11 +50,26 @@ class ColorSplitResult:
     method: str = "painted"
 
 
-def _paint_color_to_extruder(paint_color) -> int:
-    if paint_color is None or paint_color == 0:
+def _paint_color_to_extruder(pc_str: str | None, use_new_format: bool = False) -> int:
+    """
+    Decodifica paint_color -> índice de extrusor 0-based.
+
+    Dois formatos suportados:
+      - Formato antigo (decimal): valores como "4", "16", "64"
+        Fórmula: max(0, bit_position_do_menor_bit - 1)
+      - Formato novo Bambu hex: valores como "4", "8", "3C", "1C"
+        Fórmula: bit_position_do_menor_bit + 1
+        Detectado quando o arquivo contém paint_color com chars A-F.
+    """
+    if not pc_str:
         return 0
-    trailing = (paint_color & -paint_color).bit_length() - 1
-    return max(0, trailing - 1)
+    val = int(pc_str, 16)   # sempre parsear como hex (valores decimais puros são iguais)
+    if val == 0:
+        return 0
+    trailing = (val & -val).bit_length() - 1   # posição do bit mais baixo (0-indexed)
+    if use_new_format:
+        return trailing + 1   # Bambu hex: bit_position + 1
+    return max(0, trailing - 1)   # formato antigo
 
 
 def _read_filament_colors(zip_file: zipfile.ZipFile) -> list:
@@ -85,8 +100,9 @@ def _detect_method(obj_content: str, model_settings) -> str:
         has_parts    = '<part id=' in model_settings
         has_extruder = 'key="extruder"' in model_settings
         if has_parts and has_extruder:
-            sample = obj_content[:50000]
-            if 'paint_color="' not in sample:
+            # Verificar paint_color no conteúdo inteiro — não apenas nos primeiros 50KB,
+            # pois o XML tem megabytes de vértices antes da seção de triângulos.
+            if 'paint_color="' not in obj_content:
                 return "multi_object"
     return "painted"
 
@@ -102,6 +118,11 @@ def _apply_transform(x, y, z, t):
 def _parse_painted(content: str, filament_colors: list) -> ColorSplitResult:
     logger.info("Formato: painted (paint_color por triangulo)")
 
+    # Detectar formato Bambu hex (tem chars A-F nos valores de paint_color)
+    use_new_format = bool(re.search(r'paint_color="[0-9]*[A-Fa-f][0-9A-Fa-f]*"', content))
+    if use_new_format:
+        logger.info("  Detectado formato Bambu hex (paint_color com chars A-F)")
+
     vertex_matches = RE_VERTEX.findall(content)
     vertices = np.array([[float(x), float(y), float(z)] for x, y, z in vertex_matches], dtype=np.float64)
 
@@ -110,8 +131,7 @@ def _parse_painted(content: str, filament_colors: list) -> ColorSplitResult:
     face_indices_by_ext = []
 
     for v1, v2, v3, pc_str in triangle_matches:
-        pc = int(pc_str) if pc_str else None
-        ext = _paint_color_to_extruder(pc)
+        ext = _paint_color_to_extruder(pc_str if pc_str else None, use_new_format)
         groups.setdefault(ext, []).append((int(v1), int(v2), int(v3)))
         face_indices_by_ext.append(ext)
 
@@ -305,12 +325,12 @@ def get_color_info(threemf_path) -> dict:
         }
 
     # painted
+    use_new_format = bool(re.search(r'paint_color="[0-9]*[A-Fa-f][0-9A-Fa-f]*"', obj_content))
     triangle_matches = RE_TRIANGLE.findall(obj_content)
     total = len(triangle_matches)
     counter_a = {}
     for _, _, _, pc_str in triangle_matches:
-        pc = int(pc_str) if pc_str else None
-        idx = _paint_color_to_extruder(pc)
+        idx = _paint_color_to_extruder(pc_str if pc_str else None, use_new_format)
         counter_a[idx] = counter_a.get(idx, 0) + 1
 
     filaments_out = []
