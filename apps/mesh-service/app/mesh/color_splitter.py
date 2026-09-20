@@ -6,6 +6,7 @@ B) "multi_object" -- objetos separados por extruder (Majin Buu / NO AMS)
 """
 from __future__ import annotations
 import logging, re, zipfile
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -50,83 +51,95 @@ class ColorSplitResult:
     method: str = "painted"
 
 
-def _paint_color_to_extruder(pc_str: str | None, use_new_format: bool = False) -> int:
+def _get_default_extruder(model_settings: str | None) -> int:
+    """
+    Retorna o extrusor padrão (1-based) definido no Metadata/model_settings.config.
+    Se não especificado, retorna 1.
+    """
+    if not model_settings:
+        return 1
+    match = re.search(r'key="extruder"\s+value="(\d+)"', model_settings)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            pass
+    return 1
+
+
+def _parse_triangle_color(pc_str: str | None, default_extruder: int, use_new_format: bool = False) -> int:
     """
     Decodifica paint_color -> índice de extrusor 0-based.
 
-    Dois formatos suportados:
-      - Formato antigo (decimal): valores como "4", "16", "64"
-        Fórmula: max(0, bit_position_do_menor_bit - 1)
-      - Formato novo Bambu TriangleSelector (hex): grupos de 3 bits do LSB.
-        Estado 0=NONE(padrão), 1-6=extrusores, 7=SPLIT.
-
-        Algoritmo de decodificação (descoberto por análise de componentes):
-          1. Lê grupos de 3 bits do LSB, pulando apenas NONE(0) para o primeiro estado.
-          2. O SEGUNDO estado é lido sem pular SPLIT (queremos detectá-lo).
-          3. Regras por par (first, second):
-             (4, 3) → Red   — "1C": fogo/braço esq (avg_y=+62, fundo esq)
-             (4, 7) → White — "3C": garras (mãos/pés) + fundo do olho
-                              (19 componentes isolados confirmados por conectividade)
-             (4, _) → Blue  — "2C" memb. asa, "0C" íris, "4" asa pura
-             (1, _) → Cream — "8": barriga
-             (6, _) → White — ponta de garras (estado fora de range → White)
-             (N, _) → N     — outros (estado 2=Black pupila, etc.)
-
-        Padrões confirmados por análise espacial + conectividade:
-          "4"  [4]       → Blue  ✓ (asa interior, 11.610 tri)
-          "2C" [4, 5]    → Blue  ✓ (membrana asa, 2 comps x 4k tri)
-          "3C" [4, SPLIT]→ White ✓ (19 comps isolados = garras + olhos, 6.773 tri)
-          "1C" [4, 3]    → Red   ✓ (fogo braço esq, 9.091 tri)
-          "0C" [4, 1]    → Blue  ✓ (íris azul, 475 tri na região ocular)
-          "8"  [0→1]     → Cream ✓ (barriga, 12.181 tri)
+    Especificação oficial Bambu Studio / PrusaSlicer (TriangleSelector serialization):
+      - A string hex representa um bitstream lido nibble-por-nibble do FINAL para o INÍCIO.
+      - Dentro de cada nibble de 4 bits, os bits são lidos LSB-first.
+      - Gramática do nó:
+          node := split:2 bits
+            split == 0: folha (s:2 bits; se s==3, s = take(4) + 3)
+                        s == 0: usa default_extruder (do model_settings.config)
+                        s > 0: extrusor s (1-based)
+            split != 0: special_side:2 bits, seguido recursivamente de split+1 nós filhos.
+      - Para o triângulo completo, seleciona o estado folha não-zero dominante (mais frequente).
     """
     if not pc_str:
-        return 0
-    val = int(pc_str, 16)
-    if val == 0:
-        return 0
+        return max(0, default_extruder - 1)
 
     if use_new_format:
-        SPLIT = 7
-        first = -1
-        second = -1   # pode ser SPLIT — não pulamos na posição 2
-        temp = val
-        while temp > 0:
-            s = temp & 7
-            temp >>= 3
-            if first == -1:
-                if s == 0:        # NONE na posição do primeiro → pula
-                    continue
-                first = s
+        bits = []
+        for ch in reversed(pc_str):
+            try:
+                n = int(ch, 16)
+            except ValueError:
+                return max(0, default_extruder - 1)
+            bits.extend((n >> i) & 1 for i in range(4))
+
+        pos = 0
+        def take(k: int) -> int:
+            nonlocal pos
+            if pos + k > len(bits):
+                return 0
+            v = sum(bits[pos + i] << i for i in range(k))
+            pos += k
+            return v
+
+        states = []
+        def node():
+            split = take(2)
+            if split == 0:
+                s = take(2)
+                if s == 3:
+                    s = take(4) + 3
+                states.append(s)
             else:
-                # Capturamos o próximo grupo sem filtrar SPLIT:
-                # precisamos distinguir "3C"=[4,SPLIT]→White de "2C"=[4,5]→Blue
-                if s == 0:        # NONE na posição do segundo → pula
-                    continue
-                second = s        # guarda (pode ser SPLIT=7 ou outro estado)
-                break
+                take(2)  # special side
+                for _ in range(split + 1):
+                    node()
 
-        if first == -1:
-            return 0
+        try:
+            node()
+        except Exception:
+            pass
 
-        if first == 4:
-            if second == 3:   # "1C" [4,3] → Red (fogo)
-                return 3
-            if second == 7:   # "3C" [4,SPLIT] → White (garras + olhos)
-                return 5
-            if second == 1:   # "0C" [4,1] → Black (pupila/bola do olho)
-                return 2
-            # "2C"[4,5], "4"[4,-1] → Blue (membrana asa)
-            return 4
+        if not states:
+            return max(0, default_extruder - 1)
 
-        if first == 6:        # estado 6 fora de range → White (ponta de garras)
-            return 5
-
-        return first
+        counts = Counter(states)
+        non_zero = {k: v for k, v in counts.items() if k != 0}
+        if non_zero:
+            dominant = max(non_zero.items(), key=lambda x: x[1])[0]
+            return max(0, dominant - 1)
+        return max(0, default_extruder - 1)
 
     # Formato antigo: bitmask decimal
-    trailing = (val & -val).bit_length() - 1
-    return max(0, trailing - 1)
+    try:
+        val = int(pc_str, 16)
+        if val == 0:
+            return max(0, default_extruder - 1)
+        trailing = (val & -val).bit_length() - 1
+        return max(0, trailing - 1)
+    except ValueError:
+        return max(0, default_extruder - 1)
 
 
 
@@ -173,7 +186,7 @@ def _apply_transform(x, y, z, t):
     )
 
 
-def _parse_painted(content: str, filament_colors: list) -> ColorSplitResult:
+def _parse_painted(content: str, filament_colors: list, default_extruder: int = 1) -> ColorSplitResult:
     logger.info("Formato: painted (paint_color por triangulo)")
 
     # Detectar formato Bambu hex (tem chars A-F nos valores de paint_color)
@@ -189,7 +202,7 @@ def _parse_painted(content: str, filament_colors: list) -> ColorSplitResult:
     face_indices_by_ext = []
 
     for v1, v2, v3, pc_str in triangle_matches:
-        ext = _paint_color_to_extruder(pc_str if pc_str else None, use_new_format)
+        ext = _parse_triangle_color(pc_str if pc_str else None, default_extruder, use_new_format)
         groups.setdefault(ext, []).append((int(v1), int(v2), int(v3)))
         face_indices_by_ext.append(ext)
 
@@ -322,10 +335,12 @@ def parse_3mf_colors(threemf_path) -> ColorSplitResult:
     method = _detect_method(obj_content, model_settings)
     logger.info(f"Metodo detectado: {method}")
 
+    default_extruder = _get_default_extruder(model_settings)
+
     if method == "multi_object" and model_settings and root_content:
         result = _parse_multi_object(obj_content, root_content, model_settings, filament_colors)
     else:
-        result = _parse_painted(obj_content, filament_colors)
+        result = _parse_painted(obj_content, filament_colors, default_extruder)
 
     result.model_name = threemf_path.stem
     return result
@@ -348,6 +363,7 @@ def get_color_info(threemf_path) -> dict:
         model_settings = z.read("Metadata/model_settings.config").decode("utf-8", errors="replace") if "Metadata/model_settings.config" in z.namelist() else None
 
     method = _detect_method(obj_content, model_settings)
+    default_extruder = _get_default_extruder(model_settings)
 
     if method == "multi_object" and model_settings:
         part_extruder = {}
@@ -388,7 +404,7 @@ def get_color_info(threemf_path) -> dict:
     total = len(triangle_matches)
     counter_a = {}
     for _, _, _, pc_str in triangle_matches:
-        idx = _paint_color_to_extruder(pc_str if pc_str else None, use_new_format)
+        idx = _parse_triangle_color(pc_str if pc_str else None, default_extruder, use_new_format)
         counter_a[idx] = counter_a.get(idx, 0) + 1
 
     filaments_out = []

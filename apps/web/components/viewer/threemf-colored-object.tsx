@@ -103,73 +103,115 @@ function calcBBox(positions: Float32Array): {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MÉTODO A: paint_color por triângulo (Charizard / AMS painted)
+// MÉTODO A: paint_color por triângulo (Bambu / Prusa TriangleSelector)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** paint_color hex string → índice de extruder 0-based.
+/** Extrai o extrusor padrão (1-based) de model_settings.config */
+function parseDefaultExtruder(modelSettingsXml: string | null): number {
+  if (!modelSettingsXml) return 1;
+  const match = modelSettingsXml.match(/key="extruder"\s+value="(\d+)"/);
+  if (match) {
+    const v = parseInt(match[1], 10);
+    if (!isNaN(v) && v > 0) return v;
+  }
+  return 1;
+}
+
+/**
+ * paint_color hex string → índice de extruder 0-based.
  *
- *  Algoritmo (descoberto por análise de conectividade dos triângulos):
- *
- *  Formato Bambu TriangleSelector: grupos de 3 bits do LSB.
- *  Estado 0=NONE, 1-6=extrusores, 7=SPLIT.
- *
- *  Regras por par (first, second):
- *    (4, 3) → 3 (Red)   — "1C": fogo
- *    (4, 7) → 5 (White) — "3C": garras (19 clusters isolados) + olhos brancos
- *    (4, 1) → 2 (Black) — "0C": pupila/bola do olho (exclusivamente área ocular)
- *    (4, _) → 4 (Blue)  — "2C": membrana asa
- *    (6, _) → 5 (White) — estado fora de range → White (ponta de garras)
- *    (N, _) → N         — outros
- *
- *  Padrões confirmados:
- *    "4"  [4]       → Blue  (asa interior)
- *    "2C" [4,5]     → Blue  (membrana asa)
- *    "3C" [4,SPLIT] → White (garras + olhos brancos)
- *    "1C" [4,3]     → Red   (fogo)
- *    "0C" [4,1]     → Black (pupila/bola do olho)
- *    "8"  [0→1]     → Cream (barriga)
+ * Implementação oficial da serialização TriangleSelector (Bambu Studio / PrusaSlicer):
+ *   - Bitstream lido nibble-a-nibble do FINAL da string para o INÍCIO.
+ *   - Dentro de cada nibble de 4 bits, os bits são lidos LSB-first.
+ *   - Gramática do nó:
+ *       node := split:2 bits
+ *         split === 0: folha (s:2 bits; se s===3, s = take(4 bits) + 3)
+ *                      s === 0: usa defaultExtruder (do model_settings.config)
+ *                      s > 0: extrusor s (1-based)
+ *         split !== 0: special_side:2 bits, seguido de split+1 nós filhos.
+ *   - Para o triângulo completo, seleciona o estado folha não-zero dominante.
  */
-function paintColorToExtruder(pc: string | null, useNewFormat: boolean): number {
-  if (!pc) return 0;
+function paintColorToExtruder(
+  pc: string | null,
+  defaultExtruder: number,
+  useNewFormat: boolean,
+): number {
+  if (!pc) return Math.max(0, defaultExtruder - 1);
+
   if (useNewFormat) {
-    const safe = pc.length > 13 ? pc.slice(-13) : pc;
-    let val = parseInt(safe, 16);
-    if (!val) return 0;
-    let first = -1;
-    let second = -1;
-    while (val > 0) {
-      const state = val % 8;
-      val = Math.floor(val / 8);
-      if (first === -1) {
-        if (state === 0) continue;   // NONE na pos 1 → pula
-        first = state;
+    const bits: number[] = [];
+    for (let i = pc.length - 1; i >= 0; i--) {
+      const n = parseInt(pc[i], 16);
+      if (isNaN(n)) return Math.max(0, defaultExtruder - 1);
+      bits.push(n & 1, (n >> 1) & 1, (n >> 2) & 1, (n >> 3) & 1);
+    }
+
+    let pos = 0;
+    function take(k: number): number {
+      if (pos + k > bits.length) return 0;
+      let v = 0;
+      for (let i = 0; i < k; i++) {
+        v |= bits[pos + i] << i;
+      }
+      pos += k;
+      return v;
+    }
+
+    const states: number[] = [];
+    function node() {
+      const split = take(2);
+      if (split === 0) {
+        let s = take(2);
+        if (s === 3) {
+          s = take(4) + 3;
+        }
+        states.push(s);
       } else {
-        if (state === 0) continue;   // NONE na pos 2 → pula
-        second = state;              // guarda SPLIT(7) sem pular
-        break;
+        take(2); // special side
+        for (let i = 0; i < split + 1; i++) {
+          node();
+        }
       }
     }
-    if (first === -1) return 0;
-    if (first === 4) {
-      if (second === 3) return 3;    // "1C"[4,3] → Red (fogo)
-      if (second === 7) return 5;    // "3C"[4,SPLIT] → White (garras+olhos)
-      if (second === 1) return 2;    // "0C"[4,1] → Black (pupila)
-      return 4;                      // "2C","4" → Blue (membrana asa)
+
+    try {
+      node();
+    } catch {
+      // stream truncado ou fim
     }
-    if (first === 6) return 5;       // estado fora de range → White
-    return first;
+
+    if (states.length === 0) return Math.max(0, defaultExtruder - 1);
+
+    const counts: Record<number, number> = {};
+    for (const s of states) {
+      if (s > 0) counts[s] = (counts[s] || 0) + 1;
+    }
+
+    let best = defaultExtruder;
+    let maxCount = 0;
+    for (const [stStr, cnt] of Object.entries(counts)) {
+      if (cnt > maxCount) {
+        maxCount = cnt;
+        best = Number(stStr);
+      }
+    }
+
+    return Math.max(0, best - 1);
   }
+
   // Formato antigo: bitmask decimal
   const val = parseInt(pc, 16);
-  if (!val) return 0;
+  if (!val) return Math.max(0, defaultExtruder - 1);
   const lowestBit = val & -val;
   const bitPos = Math.log2(lowestBit);
   return Math.max(0, bitPos - 1);
 }
 
-
-
-function parsePainted(xmlText: string, filamentColors: string[]): ParseResult {
+function parsePainted(
+  xmlText: string,
+  filamentColors: string[],
+  defaultExtruder: number = 1,
+): ParseResult {
   const vertRe = /<vertex x="([^"]+)" y="([^"]+)" z="([^"]+)"/g;
   const triRe  = /<triangle v1="(\d+)" v2="(\d+)" v3="(\d+)"(?:[^/\n>]*paint_color="([0-9A-Fa-f]+)")?/g;
 
@@ -181,10 +223,12 @@ function parsePainted(xmlText: string, filamentColors: string[]): ParseResult {
     rawVerts.push(parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3]));
   }
 
+  const baseExtIdx = Math.max(0, defaultExtruder - 1);
+
   const facesByExt = new Map<number, number[][]>();
   for (const m of xmlText.matchAll(triRe)) {
     const pcStr = m[4] !== undefined ? m[4] : null;
-    const ext   = paintColorToExtruder(pcStr, useNewFormat);
+    const ext   = paintColorToExtruder(pcStr, defaultExtruder, useNewFormat);
     if (!facesByExt.has(ext)) facesByExt.set(ext, []);
     facesByExt.get(ext)!.push([parseInt(m[1]), parseInt(m[2]), parseInt(m[3])]);
   }
@@ -207,7 +251,12 @@ function parsePainted(xmlText: string, filamentColors: string[]): ParseResult {
       pos[p++] = rawVerts[i3] - cx; pos[p++] = rawVerts[i3+1] - cy; pos[p++] = rawVerts[i3+2] - cz;
     }
     const colorHex = ext < filamentColors.length ? filamentColors[ext] : "#888888";
-    groups.push({ extruderIndex: ext, colorHex, geometry: buildGeoFromPositions(pos), isBase: ext === 0 });
+    groups.push({
+      extruderIndex: ext,
+      colorHex,
+      geometry: buildGeoFromPositions(pos),
+      isBase: ext === baseExtIdx,
+    });
   }
 
   // Posições centralizadas Y-up para o pai (grupo base)
@@ -226,6 +275,7 @@ function parsePainted(xmlText: string, filamentColors: string[]): ParseResult {
 
   return { groups, bbox, centeredPositionsYUp: centeredYUp, method: "painted" };
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MÉTODO B: objetos separados por extruder (Majin Buu / No AMS)
@@ -498,13 +548,14 @@ function useThreeMFParsed(url: string) {
         }
 
         const method = detectMethod(objXml, modelSettingsXml);
-        console.log("[3MF] Método detectado:", method, "| Filamentos:", filamentColors);
+        const defaultExtruder = parseDefaultExtruder(modelSettingsXml);
+        console.log("[3MF] Método:", method, "| Extrusor padrão:", defaultExtruder, "| Filamentos:", filamentColors);
 
         let parsed: ParseResult;
         if (method === "multi_object" && modelSettingsXml) {
           parsed = parseMultiObject(objXml, rootXml, modelSettingsXml, filamentColors);
         } else {
-          parsed = parsePainted(objXml, filamentColors);
+          parsed = parsePainted(objXml, filamentColors, defaultExtruder);
         }
 
         console.log("[3MF] Grupos:", parsed.groups.map(g => ({
