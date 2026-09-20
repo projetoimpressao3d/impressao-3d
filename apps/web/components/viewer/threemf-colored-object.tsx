@@ -207,6 +207,68 @@ function paintColorToExtruder(
   return Math.max(0, bitPos - 1);
 }
 
+/**
+ * Divide uma lista de triângulos em componentes conexos (ilhas geométricas).
+ * Dois triângulos pertencem ao mesmo componente se compartilham pelo menos 1 vértice.
+ * Filtra ruídos minúsculos (< minFaces triângulos).
+ */
+function splitConnectedComponents(faces: number[][], minFaces = 6): number[][][] {
+  const vertToFaces = new Map<number, number[]>();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const [v1, v2, v3] = faces[fi];
+    let l1 = vertToFaces.get(v1);
+    if (!l1) { l1 = []; vertToFaces.set(v1, l1); }
+    l1.push(fi);
+
+    let l2 = vertToFaces.get(v2);
+    if (!l2) { l2 = []; vertToFaces.set(v2, l2); }
+    l2.push(fi);
+
+    let l3 = vertToFaces.get(v3);
+    if (!l3) { l3 = []; vertToFaces.set(v3, l3); }
+    l3.push(fi);
+  }
+
+  const visited = new Uint8Array(faces.length);
+  const components: number[][][] = [];
+
+  for (let fi = 0; fi < faces.length; fi++) {
+    if (visited[fi]) continue;
+    visited[fi] = 1;
+    const comp: number[][] = [];
+    const queue = [fi];
+    let head = 0;
+
+    while (head < queue.length) {
+      const curr = queue[head++];
+      comp.push(faces[curr]);
+      const [v1, v2, v3] = faces[curr];
+      for (const v of [v1, v2, v3]) {
+        const neighbors = vertToFaces.get(v);
+        if (neighbors) {
+          for (let ni = 0; ni < neighbors.length; ni++) {
+            const nfi = neighbors[ni];
+            if (!visited[nfi]) {
+              visited[nfi] = 1;
+              queue.push(nfi);
+            }
+          }
+        }
+      }
+    }
+
+    if (comp.length >= minFaces) {
+      components.push(comp);
+    }
+  }
+
+  if (components.length === 0 && faces.length > 0) {
+    return [faces];
+  }
+
+  return components;
+}
+
 function parsePainted(
   xmlText: string,
   filamentColors: string[],
@@ -250,11 +312,27 @@ function parsePainted(
       pos[p++] = rawVerts[i2] - cx; pos[p++] = rawVerts[i2+1] - cy; pos[p++] = rawVerts[i2+2] - cz;
       pos[p++] = rawVerts[i3] - cx; pos[p++] = rawVerts[i3+1] - cy; pos[p++] = rawVerts[i3+2] - cz;
     }
+
+    // Decompor em componentes conexos (ilhas individuais: asas, garras, olhos, etc.)
+    const comps = splitConnectedComponents(faces, 6);
+    const partGeos: THREE.BufferGeometry[] = comps.map((comp) => {
+      const partPos = new Float32Array(comp.length * 9);
+      let pp = 0;
+      for (const [v1, v2, v3] of comp) {
+        const i1 = v1 * 3, i2 = v2 * 3, i3 = v3 * 3;
+        partPos[pp++] = rawVerts[i1] - cx; partPos[pp++] = rawVerts[i1+1] - cy; partPos[pp++] = rawVerts[i1+2] - cz;
+        partPos[pp++] = rawVerts[i2] - cx; partPos[pp++] = rawVerts[i2+1] - cy; partPos[pp++] = rawVerts[i2+2] - cz;
+        partPos[pp++] = rawVerts[i3] - cx; partPos[pp++] = rawVerts[i3+1] - cy; partPos[pp++] = rawVerts[i3+2] - cz;
+      }
+      return buildGeoFromPositions(partPos);
+    });
+
     const colorHex = ext < filamentColors.length ? filamentColors[ext] : "#888888";
     groups.push({
       extruderIndex: ext,
       colorHex,
       geometry: buildGeoFromPositions(pos),
+      parts: partGeos.length > 0 ? partGeos : undefined,
       isBase: ext === baseExtIdx,
     });
   }

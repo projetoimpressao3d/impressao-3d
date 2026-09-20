@@ -56,8 +56,12 @@ def _mesh_to_model_xml(
         '<resources>',
     ]
 
+    if len(colors) == 1 and len(meshes) > 1:
+        colors = colors * len(meshes)
+
+    unique_colors = list(dict.fromkeys(colors))
     lines.append('<basematerials id="1">')
-    for i, color in enumerate(colors):
+    for i, color in enumerate(unique_colors):
         r = int(color[1:3], 16)
         g = int(color[3:5], 16)
         b = int(color[5:7], 16)
@@ -65,7 +69,7 @@ def _mesh_to_model_xml(
     lines.append('</basematerials>')
 
     for obj_id, (mesh, color) in enumerate(zip(meshes, colors), start=2):
-        color_idx = colors.index(color) if color in colors else 0
+        color_idx = unique_colors.index(color) if color in unique_colors else 0
         working_mesh = _apply_snap_to_floor(mesh) if snap_to_floor else mesh
 
         lines.append(f'<object id="{obj_id}" type="model" pid="1" pindex="{color_idx}">')

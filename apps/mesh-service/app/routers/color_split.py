@@ -194,14 +194,24 @@ async def split_model_by_color(
             )
 
         # 3. Fechar buracos de cada peca
+        # 3. Fechar buracos de cada peca e sub-componente
         logger.info("Fechando buracos das pecas...")
         for piece in split_result.pieces:
             piece.mesh = close_color_piece(piece.mesh, method=payload.cap_method)
             piece.is_watertight = piece.mesh.is_watertight
+            if piece.sub_meshes:
+                piece.sub_meshes = [
+                    close_color_piece(sm, method=payload.cap_method)
+                    for sm in piece.sub_meshes
+                ]
 
-        # 4. Empacotar em mesas
+        # 4. Empacotar em mesas (reposicionamento e assentamento Z=0)
         pack_result = pack_pieces_to_plates(
-            split_result.pieces, plate_x, plate_y, plate_z
+            split_result.pieces,
+            plate_x,
+            plate_y,
+            plate_z,
+            snap_to_floor=payload.snap_to_floor,
         )
 
         # 5. Gerar e fazer upload dos 3MFs
@@ -214,28 +224,23 @@ async def split_model_by_color(
                 color = piece.filament.color_hex
 
                 plate_num = plate_obj.plate_index + 1
-                fits = placement.piece_index not in pack_result.oversized_pieces
-                extents = [round(float(e), 1) for e in piece.mesh.extents]
+                fits = placement.fits_in_plate
+                extents = [round(float(e), 1) for e in placement.extents_mm]
 
                 # Gerar nome de arquivo
                 safe_color = color.replace("#", "")
                 fname = f"{model_id}_ext{ext_num}_{safe_color}_plate{plate_num}.3mf"
                 storage_path = f"pieces/{payload.user_id}/{model_id}/{fname}"
 
-                # Gerar 3MF em memoria
+                # Gerar 3MF em memoria com malhas já posicionadas e assentadas
                 model_name = f"{split_result.model_name}_ext{ext_num}"
-                # Para multi_object: snap ja foi aplicado por-objeto no parser
-                # Para painted: respeitar escolha do usuario (snap_to_floor)
-                effective_snap = (
-                    payload.snap_to_floor
-                    if split_result.method != "multi_object"
-                    else False  # ja esta com snap aplicado individualmente
-                )
+                meshes_to_write = placement.packed_meshes if placement.packed_meshes else [piece.mesh]
+
                 threemf_bytes = write_plate_3mf_bytes(
-                    meshes=[piece.mesh],
-                    colors=[color],
+                    meshes=meshes_to_write,
+                    colors=[color] * len(meshes_to_write),
                     model_name=model_name,
-                    snap_to_floor=effective_snap,
+                    snap_to_floor=False,  # Já posicionadas e assentadas no pack
                 )
 
                 # Upload

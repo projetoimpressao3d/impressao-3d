@@ -6,7 +6,7 @@ B) "multi_object" -- objetos separados por extruder (Majin Buu / NO AMS)
 """
 from __future__ import annotations
 import logging, re, zipfile
-from collections import Counter
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -40,6 +40,7 @@ class ColorPiece:
     filament: FilamentInfo
     mesh: trimesh.Trimesh
     is_watertight: bool = False
+    sub_meshes: list[trimesh.Trimesh] = field(default_factory=list)
 
 
 @dataclass
@@ -186,6 +187,53 @@ def _apply_transform(x, y, z, t):
     )
 
 
+def split_mesh_components(vertices: np.ndarray, faces: np.ndarray, min_faces: int = 10) -> list[tuple[np.ndarray, np.ndarray]]:
+    """
+    Divide vértices e faces em componentes conexos (ilhas).
+    Dois triângulos pertencem ao mesmo componente se compartilham pelo menos um vértice.
+    Filtra componentes espúrios menores que min_faces.
+    """
+    vert_to_faces = defaultdict(list)
+    for fi, (v1, v2, v3) in enumerate(faces):
+        vert_to_faces[v1].append(fi)
+        vert_to_faces[v2].append(fi)
+        vert_to_faces[v3].append(fi)
+
+    visited_faces = set()
+    components = []
+
+    for fi in range(len(faces)):
+        if fi in visited_faces:
+            continue
+        comp_faces = []
+        queue = deque([fi])
+        visited_faces.add(fi)
+
+        while queue:
+            curr_fi = queue.popleft()
+            comp_faces.append(curr_fi)
+            v1, v2, v3 = faces[curr_fi]
+            for v in (v1, v2, v3):
+                for neighbor_fi in vert_to_faces[v]:
+                    if neighbor_fi not in visited_faces:
+                        visited_faces.add(neighbor_fi)
+                        queue.append(neighbor_fi)
+
+        if len(comp_faces) < min_faces:
+            continue
+
+        comp_faces_arr = np.array([faces[idx] for idx in comp_faces], dtype=np.int32)
+        unique_verts, inverse = np.unique(comp_faces_arr.ravel(), return_inverse=True)
+        sub_verts = vertices[unique_verts]
+        sub_faces = inverse.reshape(-1, 3)
+        components.append((sub_verts, sub_faces))
+
+    if not components and len(faces) > 0:
+        return [(vertices, faces)]
+
+    return components
+
+
 def _parse_painted(content: str, filament_colors: list, default_extruder: int = 1) -> ColorSplitResult:
     logger.info("Formato: painted (paint_color por triangulo)")
 
@@ -224,7 +272,20 @@ def _parse_painted(content: str, filament_colors: list, default_extruder: int = 
         sub_verts = vertices[unique_verts]
         sub_faces = inverse.reshape(-1, 3)
         mesh = trimesh.Trimesh(vertices=sub_verts, faces=sub_faces, process=False)
-        pieces.append(ColorPiece(extruder_index=ext_idx, filament=fi, mesh=mesh, is_watertight=mesh.is_watertight))
+
+        # Decompor em componentes conexos reais (ilhas geométricas)
+        comps = split_mesh_components(sub_verts, sub_faces, min_faces=10)
+        sub_meshes = [trimesh.Trimesh(vertices=cv, faces=cf, process=False) for cv, cf in comps]
+        if not sub_meshes:
+            sub_meshes = [mesh]
+
+        pieces.append(ColorPiece(
+            extruder_index=ext_idx,
+            filament=fi,
+            mesh=mesh,
+            is_watertight=mesh.is_watertight,
+            sub_meshes=sub_meshes,
+        ))
 
     return ColorSplitResult(pieces=pieces, filaments=filaments, total_faces=total_faces, method="painted")
 
@@ -252,6 +313,7 @@ def _parse_multi_object(obj_content, root_content, model_settings, filament_colo
 
     positions_by_ext = {}
     names_by_ext = {}
+    sub_meshes_by_ext = {}
     total_faces = 0
 
     for om in RE_OBJECT_BLOCK.finditer(obj_content):
@@ -271,6 +333,7 @@ def _parse_multi_object(obj_content, root_content, model_settings, filament_colo
         total_faces += len(tris)
         positions_by_ext.setdefault(ext_idx, [])
         names_by_ext.setdefault(ext_idx, [])
+        sub_meshes_by_ext.setdefault(ext_idx, [])
 
         # ── Snap Z por objeto individual ─────────────────────────────────────
         # Cada part id separado recebe seu proprio snap Z=0.
@@ -282,10 +345,17 @@ def _parse_multi_object(obj_content, root_content, model_settings, filament_colo
                 verts = [(x, y, z - min_z) for x, y, z in verts]
         # ─────────────────────────────────────────────────────────────────────
 
+        part_raw = []
         for v1, v2, v3 in tris:
             for vi in (v1, v2, v3):
                 if vi < len(verts):
                     positions_by_ext[ext_idx].extend(verts[vi])
+                    part_raw.extend(verts[vi])
+
+        if part_raw:
+            p_verts = np.array(part_raw, dtype=np.float64).reshape(-1, 3)
+            p_faces = np.arange(len(p_verts), dtype=np.int32).reshape(-1, 3)
+            sub_meshes_by_ext[ext_idx].append(trimesh.Trimesh(vertices=p_verts, faces=p_faces, process=False))
 
         if name:
             names_by_ext[ext_idx].append(name)
@@ -312,8 +382,11 @@ def _parse_multi_object(obj_content, root_content, model_settings, filament_colo
         verts_arr = np.array(raw, dtype=np.float64).reshape(-1, 3)
         faces_arr = np.arange(n_verts, dtype=np.int32).reshape(-1, 3)
         mesh = trimesh.Trimesh(vertices=verts_arr, faces=faces_arr, process=False)
-        pieces.append(ColorPiece(extruder_index=ext_idx, filament=fi, mesh=mesh, is_watertight=mesh.is_watertight))
-        logger.info(f"  Ext {ext_idx+1} ({color}): {n_faces} faces")
+        sub_list = sub_meshes_by_ext.get(ext_idx, [])
+        if not sub_list:
+            sub_list = [mesh]
+        pieces.append(ColorPiece(extruder_index=ext_idx, filament=fi, mesh=mesh, is_watertight=mesh.is_watertight, sub_meshes=sub_list))
+        logger.info(f"  Ext {ext_idx+1} ({color}): {n_faces} faces ({len(sub_list)} sub-peças)")
 
     return ColorSplitResult(pieces=pieces, filaments=filaments, total_faces=total_faces, method="multi_object")
 

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 /**
  * ColorPiecesPreviewScene - Exibe cada peca separada por cor em sua propria
@@ -65,32 +65,103 @@ export function ColorPiecesPreviewScene({ groups, selectedPlate }: ColorPiecesPr
       const platePos = new THREE.Vector3(plateCenterX, 0, 0);
 
       // Usar as geometrias individuais por sub-objeto (group.parts)
-      // Se nao houver parts (formato painted), usar a geometria mesclada como uma parte unica
-      const subGeos: THREE.BufferGeometry[] = group.parts && group.parts.length > 0
-        ? group.parts
-        : [group.geometry];
+      // Se nao houver parts (formato painted antigo), usar a geometria mesclada como uma parte unica
+      const subGeos: THREE.BufferGeometry[] =
+        group.parts && group.parts.length > 0 ? group.parts : [group.geometry];
 
-      // Calcular o bounding box do grupo inteiro para centralizar XY na mesa
-      const groupBbox = getGroupBBox(group.parts && group.parts.length > 0
-        ? group.geometry  // centroide da geometria mesclada para centralizar XY
-        : group.geometry);
-      const groupCenter = new THREE.Vector3();
-      groupBbox.getCenter(groupCenter);
+      const margin = 8;
+      const spacing = 8;
+      const usableW = Math.max(10, plateW - 2 * margin);
 
-      const parts: PartLayout[] = subGeos.map((partGeo) => {
-        const partBbox = getGroupBBox(partGeo);
+      interface PartItem {
+        geo: THREE.BufferGeometry;
+        ew: number;
+        ed: number;
+        center: THREE.Vector3;
+        minZ: number;
+      }
+
+      const items: PartItem[] = subGeos.map((geo) => {
+        const bbox = getGroupBBox(geo);
+        const center = new THREE.Vector3();
+        bbox.getCenter(center);
+        return {
+          geo,
+          ew: bbox.max.x - bbox.min.x,
+          ed: bbox.max.y - bbox.min.y,
+          center,
+          minZ: bbox.min.z,
+        };
+      });
+
+      // Ordenar por área de projeção decrescente
+      items.sort((a, b) => b.ew * b.ed - a.ew * a.ed);
+
+      // Shelf packing 2D (em coordenadas relativas de mesa)
+      let currentX = 0;
+      let currentY = 0;
+      let rowMaxD = 0;
+
+      interface PlacedItem {
+        item: PartItem;
+        relX: number;
+        relY: number;
+      }
+
+      const placed: PlacedItem[] = [];
+
+      for (const it of items) {
+        if (currentX + it.ew > usableW && currentX > 0) {
+          currentX = 0;
+          currentY += rowMaxD + spacing;
+          rowMaxD = 0;
+        }
+
+        const relX = currentX + it.ew / 2;
+        const relY = currentY + it.ed / 2;
+        rowMaxD = Math.max(rowMaxD, it.ed);
+        currentX += it.ew + spacing;
+
+        placed.push({ item: it, relX, relY });
+      }
+
+      // Calcular o bounding box do layout colocado
+      let minRelX = Infinity, maxRelX = -Infinity;
+      let minRelY = Infinity, maxRelY = -Infinity;
+
+      for (const p of placed) {
+        const halfW = p.item.ew / 2;
+        const halfD = p.item.ed / 2;
+        if (p.relX - halfW < minRelX) minRelX = p.relX - halfW;
+        if (p.relX + halfW > maxRelX) maxRelX = p.relX + halfW;
+        if (p.relY - halfD < minRelY) minRelY = p.relY - halfD;
+        if (p.relY + halfD > maxRelY) maxRelY = p.relY + halfD;
+      }
+
+      const layoutW = maxRelX - minRelX;
+      const layoutD = maxRelY - minRelY;
+
+      // Centralizar o layout na mesa:
+      // X da mesa está centralizado em plateCenterX
+      // Y da mesa (profundidade 3MF) está centralizado em 0
+      const shiftX = (plateCenterX - layoutW / 2) - minRelX;
+      const shiftY = (-layoutD / 2) - minRelY;
+
+      const parts: PartLayout[] = placed.map(({ item, relX, relY }) => {
+        const targetX = relX + shiftX;
+        const targetY = relY + shiftY;
 
         // offset no espaco LOCAL do grupo rotacionado (3MF Z-up):
-        //   X: centralizar cada parte conforme sua posicao relativa no grupo
-        //   Y: centralizar profundidade
-        //   Z: snap individual da parte para a base da mesa (plateH/2 = base do BuildPlateBox)
+        //   X: targetX - item.center.x (centralizado/arranjado na mesa)
+        //   Y: targetY - item.center.y (centralizado/arranjado na mesa)
+        //   Z: -plateH / 2 - item.minZ (snap individual na base da mesa)
         const offset = new THREE.Vector3(
-          plateCenterX - groupCenter.x,   // X: centralizar o grupo na mesa
-          -groupCenter.y,                  // Y: centralizar profundidade
-          -plateH / 2 - partBbox.min.z,   // Z->Y: snap individual para a base
+          targetX - item.center.x,
+          targetY - item.center.y,
+          -plateH / 2 - item.minZ,
         );
 
-        return { geometry: partGeo, colorHex: group.colorHex, offset };
+        return { geometry: item.geo, colorHex: group.colorHex, offset };
       });
 
       result.push({ platePos, parts });
