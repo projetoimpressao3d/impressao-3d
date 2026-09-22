@@ -269,6 +269,164 @@ function splitConnectedComponents(faces: number[][], minFaces = 6): number[][][]
   return components;
 }
 
+/**
+ * Encontra todos os loops de borda aberta de um componente e gera as faces
+ * de selamento (capping) via triangulação planar / Earcut.
+ */
+function capComponentLoops(
+  compFaces: number[][],
+  rawVerts: number[],
+): number[][] {
+  const edgeCounts = new Map<string, number>();
+  const faceEdges: [number, number][] = [];
+
+  for (const [v1, v2, v3] of compFaces) {
+    faceEdges.push([v1, v2], [v2, v3], [v3, v1]);
+
+    const k1 = v1 < v2 ? `${v1}_${v2}` : `${v2}_${v1}`;
+    const k2 = v2 < v3 ? `${v2}_${v3}` : `${v3}_${v2}`;
+    const k3 = v3 < v1 ? `${v3}_${v1}` : `${v1}_${v3}`;
+    edgeCounts.set(k1, (edgeCounts.get(k1) ?? 0) + 1);
+    edgeCounts.set(k2, (edgeCounts.get(k2) ?? 0) + 1);
+    edgeCounts.set(k3, (edgeCounts.get(k3) ?? 0) + 1);
+  }
+
+  // Arestas de borda dirigida (pertencem a apenas 1 face do componente)
+  const boundaryEdges: [number, number][] = [];
+  for (const [u, v] of faceEdges) {
+    const k = u < v ? `${u}_${v}` : `${v}_${u}`;
+    if (edgeCounts.get(k) === 1) {
+      boundaryEdges.push([u, v]);
+    }
+  }
+
+  if (boundaryEdges.length === 0) return [];
+
+  const adj = new Map<number, number[]>();
+  for (const [u, v] of boundaryEdges) {
+    let list = adj.get(u);
+    if (!list) {
+      list = [];
+      adj.set(u, list);
+    }
+    list.push(v);
+  }
+
+  const visitedEdges = new Set<string>();
+  const loops: number[][] = [];
+
+  for (const [startU, startV] of boundaryEdges) {
+    const startKey = `${startU}>${startV}`;
+    if (visitedEdges.has(startKey)) continue;
+
+    const loop = [startU];
+    visitedEdges.add(startKey);
+    let curr = startV;
+
+    while (curr !== startU) {
+      loop.push(curr);
+      const candidates = (adj.get(curr) ?? []).filter(
+        (nxt) => !visitedEdges.has(`${curr}>${nxt}`),
+      );
+      if (candidates.length === 0) break;
+      const nxt = candidates[0];
+      visitedEdges.add(`${curr}>${nxt}`);
+      curr = nxt;
+    }
+
+    if (curr === startU && loop.length >= 3) {
+      loops.push(loop);
+    }
+  }
+
+  const capFaces: number[][] = [];
+
+  for (const loop of loops) {
+    const n = loop.length;
+    let nx = 0,
+      ny = 0,
+      nz = 0;
+    let cx = 0,
+      cy = 0,
+      cz = 0;
+
+    for (let i = 0; i < n; i++) {
+      const v0 = loop[i];
+      const v1 = loop[(i + 1) % n];
+      const x0 = rawVerts[v0 * 3],
+        y0 = rawVerts[v0 * 3 + 1],
+        z0 = rawVerts[v0 * 3 + 2];
+      const x1 = rawVerts[v1 * 3],
+        y1 = rawVerts[v1 * 3 + 1],
+        z1 = rawVerts[v1 * 3 + 2];
+
+      nx += (y0 - y1) * (z0 + z1);
+      ny += (z0 - z1) * (x0 + x1);
+      nz += (x0 - x1) * (y0 + y1);
+
+      cx += x0;
+      cy += y0;
+      cz += z0;
+    }
+
+    const normLen = Math.hypot(nx, ny, nz);
+    if (normLen < 1e-9) continue;
+    nx /= normLen;
+    ny /= normLen;
+    nz /= normLen;
+    cx /= n;
+    cy /= n;
+    cz /= n;
+
+    let ux = 1,
+      uy = 0,
+      uz = 0;
+    if (Math.abs(nx * ux + ny * uy + nz * uz) > 0.9) {
+      ux = 0;
+      uy = 1;
+      uz = 0;
+    }
+    const dotU = nx * ux + ny * uy + nz * uz;
+    ux -= dotU * nx;
+    uy -= dotU * ny;
+    uz -= dotU * nz;
+    const uLen = Math.hypot(ux, uy, uz);
+    if (uLen < 1e-9) continue;
+    ux /= uLen;
+    uy /= uLen;
+    uz /= uLen;
+
+    const vx = ny * uz - nz * uy;
+    const vy = nz * ux - nx * uz;
+    const vz = nx * uy - ny * ux;
+
+    const pts2D: THREE.Vector2[] = [];
+    for (let i = 0; i < n; i++) {
+      const vIdx = loop[i];
+      const dx = rawVerts[vIdx * 3] - cx;
+      const dy = rawVerts[vIdx * 3 + 1] - cy;
+      const dz = rawVerts[vIdx * 3 + 2] - cz;
+      pts2D.push(
+        new THREE.Vector2(
+          dx * ux + dy * uy + dz * uz,
+          dx * vx + dy * vy + dz * vz,
+        ),
+      );
+    }
+
+    try {
+      const triangles = THREE.ShapeUtils.triangulateShape(pts2D, []);
+      for (const [i0, i1, i2] of triangles) {
+        capFaces.push([loop[i0], loop[i1], loop[i2]]);
+      }
+    } catch {
+      // Ignora loop degenerado
+    }
+  }
+
+  return capFaces;
+}
+
 function parsePainted(
   xmlText: string,
   filamentColors: string[],
@@ -316,9 +474,13 @@ function parsePainted(
     // Decompor em componentes conexos (ilhas individuais: asas, garras, olhos, etc.)
     const comps = splitConnectedComponents(faces, 6);
     const partGeos: THREE.BufferGeometry[] = comps.map((comp) => {
-      const partPos = new Float32Array(comp.length * 9);
+      // Selar as aberturas da peça com tampas sólidas (Earcut) igual ao Split3MF
+      const capFaces = capComponentLoops(comp, rawVerts);
+      const allCompFaces = comp.concat(capFaces);
+
+      const partPos = new Float32Array(allCompFaces.length * 9);
       let pp = 0;
-      for (const [v1, v2, v3] of comp) {
+      for (const [v1, v2, v3] of allCompFaces) {
         const i1 = v1 * 3, i2 = v2 * 3, i3 = v3 * 3;
         partPos[pp++] = rawVerts[i1] - cx; partPos[pp++] = rawVerts[i1+1] - cy; partPos[pp++] = rawVerts[i1+2] - cz;
         partPos[pp++] = rawVerts[i2] - cx; partPos[pp++] = rawVerts[i2+1] - cy; partPos[pp++] = rawVerts[i2+2] - cz;

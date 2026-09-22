@@ -1,4 +1,4 @@
-﻿"""
+"""
 Capper: Fechamento de faces abertas em malhas separadas por cor.
 
 Quando separamos faces por cor de um 3MF, cada peca fica com buracos
@@ -23,52 +23,56 @@ logger = logging.getLogger(__name__)
 
 def find_boundary_loops(mesh: trimesh.Trimesh) -> list[list[int]]:
     """
-    Encontra todos os loops de borda aberta na malha.
-    Retorna lista de loops, onde cada loop e uma lista ordenada de indices de vertices.
+    Encontra todos os loops de borda aberta na malha usando arestas dirigidas.
+    Garante loops perfeitamente orientados (winding consistente com o perímetro da malha).
     """
-    # Encontrar arestas de borda (aresta referenciada por apenas uma face)
-    edges = mesh.edges_sorted
-    # Arestas unicas e seus counts
-    unique_edges, counts = np.unique(edges, axis=0, return_counts=True)
-    boundary_edges = unique_edges[counts == 1]
+    face_edges = []
+    for f in mesh.faces:
+        face_edges.append((int(f[0]), int(f[1])))
+        face_edges.append((int(f[1]), int(f[2])))
+        face_edges.append((int(f[2]), int(f[0])))
 
-    if len(boundary_edges) == 0:
+    # Contagem de arestas não-orientadas
+    edge_counts: dict[tuple[int, int], int] = {}
+    for u, v in face_edges:
+        key = (min(u, v), max(u, v))
+        edge_counts[key] = edge_counts.get(key, 0) + 1
+
+    # Arestas de borda são as que pertencem a apenas 1 face
+    boundary_directed = []
+    for u, v in face_edges:
+        key = (min(u, v), max(u, v))
+        if edge_counts[key] == 1:
+            boundary_directed.append((u, v))
+
+    if not boundary_directed:
         return []
 
-    # Construir grafo de adjacencia das arestas de borda
-    adjacency: dict[int, list[int]] = {}
-    for e in boundary_edges:
-        v0, v1 = int(e[0]), int(e[1])
-        adjacency.setdefault(v0, []).append(v1)
-        adjacency.setdefault(v1, []).append(v0)
+    from collections import defaultdict
+    adj = defaultdict(list)
+    for u, v in boundary_directed:
+        adj[u].append(v)
 
-    # Tracar loops percorrendo o grafo
-    visited_vertices: set[int] = set()
+    visited_edges = set()
     loops: list[list[int]] = []
 
-    for start_v in adjacency:
-        if start_v in visited_vertices:
+    for start_u, start_v in boundary_directed:
+        if (start_u, start_v) in visited_edges:
             continue
-        loop = [start_v]
-        visited_vertices.add(start_v)
-        current = start_v
-        prev = -1
+        loop = [start_u]
+        visited_edges.add((start_u, start_v))
+        curr = start_v
 
-        while True:
-            neighbors = [n for n in adjacency.get(current, []) if n != prev]
-            if not neighbors:
+        while curr != start_u:
+            loop.append(curr)
+            next_candidates = [n for n in adj[curr] if (curr, n) not in visited_edges]
+            if not next_candidates:
                 break
-            next_v = neighbors[0]
-            if next_v == start_v:
-                break  # loop fechado
-            if next_v in visited_vertices:
-                break
-            loop.append(next_v)
-            visited_vertices.add(next_v)
-            prev = current
-            current = next_v
+            next_v = next_candidates[0]
+            visited_edges.add((curr, next_v))
+            curr = next_v
 
-        if len(loop) >= 3:
+        if curr == start_u and len(loop) >= 3:
             loops.append(loop)
 
     return loops
@@ -101,7 +105,7 @@ def _cap_loop_centroid(vertices: np.ndarray, loop: list[int]) -> tuple[np.ndarra
 def _cap_loop_earcut(vertices: np.ndarray, loop: list[int]) -> tuple[np.ndarray, np.ndarray]:
     """
     Fecha um loop projetando no plano da normal media e triangulando com earcut.
-    Qualidade superior ao centroid cap para loops complexos.
+    Qualidade superior ao centroid cap para loops complexos e multiplos.
     """
     try:
         import mapbox_earcut as earcut
@@ -110,37 +114,43 @@ def _cap_loop_earcut(vertices: np.ndarray, loop: list[int]) -> tuple[np.ndarray,
         return _cap_loop_centroid(vertices, loop)
 
     loop_verts = vertices[loop]
-
-    # Calcular normal media do loop (cross product dos edges)
-    n = len(loop)
-    normal = np.zeros(3)
     centroid = loop_verts.mean(axis=0)
-    for i in range(n):
-        v0 = loop_verts[i] - centroid
-        v1 = loop_verts[(i + 1) % n] - centroid
-        normal += np.cross(v0, v1)
+    n = len(loop)
+
+    # Calcular normal do loop via método de Newell
+    normal = np.zeros(3)
+    for j in range(n):
+        v0 = loop_verts[j]
+        v1 = loop_verts[(j + 1) % n]
+        normal[0] += (v0[1] - v1[1]) * (v0[2] + v1[2])
+        normal[1] += (v0[2] - v1[2]) * (v0[0] + v1[0])
+        normal[2] += (v0[0] - v1[0]) * (v0[1] + v1[1])
+
     norm_len = np.linalg.norm(normal)
     if norm_len < 1e-10:
         return _cap_loop_centroid(vertices, loop)
     normal /= norm_len
 
     # Base ortonormal no plano do loop
-    u = np.array([1.0, 0.0, 0.0])
-    if abs(np.dot(normal, u)) > 0.9:
-        u = np.array([0.0, 1.0, 0.0])
-    u -= np.dot(u, normal) * normal
-    u /= np.linalg.norm(u)
-    v = np.cross(normal, u)
+    u_axis = np.array([1.0, 0.0, 0.0])
+    if abs(np.dot(normal, u_axis)) > 0.9:
+        u_axis = np.array([0.0, 1.0, 0.0])
+    u_axis -= np.dot(u_axis, normal) * normal
+    u_len = np.linalg.norm(u_axis)
+    if u_len < 1e-10:
+        return _cap_loop_centroid(vertices, loop)
+    u_axis /= u_len
+    v_axis = np.cross(normal, u_axis)
 
-    # Projetar vertices no plano 2D
+    # Projetar vertices no plano 2D com shape (N, 2)
     pts_2d = np.column_stack([
-        np.dot(loop_verts - centroid, u),
-        np.dot(loop_verts - centroid, v),
+        np.dot(loop_verts - centroid, u_axis),
+        np.dot(loop_verts - centroid, v_axis),
     ]).astype(np.float64)
 
     # Triangular com earcut
     rings = np.array([len(loop)], dtype=np.uint32)
-    indices = earcut.triangulate_float64(pts_2d.ravel(), rings)
+    indices = earcut.triangulate_float64(pts_2d, rings)
 
     if len(indices) == 0:
         return _cap_loop_centroid(vertices, loop)
@@ -154,7 +164,7 @@ def _cap_loop_earcut(vertices: np.ndarray, loop: list[int]) -> tuple[np.ndarray,
 
 def cap_open_mesh(
     mesh: trimesh.Trimesh,
-    method: str = "centroid",
+    method: str = "earcut",
     min_loop_length: int = 3,
 ) -> trimesh.Trimesh:
     """
@@ -162,7 +172,7 @@ def cap_open_mesh(
 
     Args:
         mesh: Malha possivelmente aberta (open mesh).
-        method: "centroid" (rapido) ou "earcut" (melhor qualidade).
+        method: "earcut" (padrao, alta qualidade) ou "centroid".
         min_loop_length: Loops com menos vertices sao ignorados.
 
     Returns:
@@ -182,19 +192,17 @@ def cap_open_mesh(
         if len(loop) < min_loop_length:
             continue
 
-        if method == "earcut":
-            new_verts, new_faces = _cap_loop_earcut(all_new_vertices, loop)
-        else:
+        if method == "centroid":
             new_verts, new_faces = _cap_loop_centroid(all_new_vertices, loop)
+        else:
+            new_verts, new_faces = _cap_loop_earcut(all_new_vertices, loop)
 
         # Offset das faces novas para os novos indices de vertices
         n_prev = len(all_new_vertices)
         if len(new_verts) > n_prev:
-            # Novos vertices foram adicionados (centroid cap)
             all_new_vertices = new_verts
             all_new_faces = np.vstack([all_new_faces, new_faces])
         else:
-            # Earcut: apenas novas faces (sem novos vertices)
             all_new_faces = np.vstack([all_new_faces, new_faces])
 
     capped = trimesh.Trimesh(
@@ -202,6 +210,12 @@ def cap_open_mesh(
         faces=all_new_faces,
         process=True,  # Reparar orientacao de normais
     )
+
+    try:
+        trimesh.repair.fix_winding(capped)
+        trimesh.repair.fix_normals(capped)
+    except Exception as e:
+        logger.warning(f"Erro ao reparar malha capped: {e}")
 
     logger.info(
         f"Malha fechada: {len(capped.vertices)} verts, {len(capped.faces)} faces, "
@@ -212,13 +226,13 @@ def cap_open_mesh(
 
 def close_color_piece(
     mesh: trimesh.Trimesh,
-    method: str = "centroid",
+    method: str = "earcut",
 ) -> trimesh.Trimesh:
     """
     Pipeline completo para preparar uma peca colorida para impressao:
     1. Remove geometria degenerada
-    2. Fecha buracos
-    3. Fixa normais inconsistentes
+    2. Fecha buracos com Earcut
+    3. Fixa normais e winding
     """
     # Passo 1: Limpar degenerados
     mesh = trimesh.Trimesh(

@@ -49,7 +49,7 @@ class ColorInfoResponse(BaseModel):
 class ColorSplitRequest(BaseModel):
     user_id: str
     build_plate_id: str
-    cap_method: str = "centroid"   # "centroid" ou "earcut"
+    cap_method: str = "earcut"     # "earcut" (padrao) ou "centroid"
     snap_to_floor: bool = True     # True = encosta Z=0; False = posicao original
 
 
