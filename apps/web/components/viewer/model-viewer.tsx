@@ -245,6 +245,10 @@ export function ModelViewer({
     model.format === "3mf" ? "colors" : "linear",
   );
 
+  // ── Conectores mecânicos para montagem pós-impressão ──────────────────
+  const [generateConnectors, setGenerateConnectors] = useState<boolean>(true);
+  const [connectorPinShape, setConnectorPinShape] = useState<"hex" | "triangle" | "cylinder">("hex");
+
   // ── Vértices do modelo (para cálculo local de bboxes) ────────────────
   const modelPositionsRef = useRef<Float32Array | null>(null);
 
@@ -416,11 +420,11 @@ export function ModelViewer({
   }, [sessionId, buildPlates, selectedPlateId]);
 
   /**
-   * Inicia a separação estrutural por esqueleto 3D.
+   * Inicia a separação estrutural por esqueleto 3D (Character Split).
    * Cria uma nova sessão (se não existir), dispara o job assíncrono e
    * faz polling a cada 2s até o resultado ficar pronto.
    */
-  const handleSeparateParts = useCallback(async (sensitivity: number) => {
+  const handleSeparateParts = useCallback(async (sensitivity: number, template: string = "auto") => {
     if (!selectedPlateId) return;
     setSplitMode("separating");
     setSplitError(null);
@@ -443,11 +447,11 @@ export function ModelViewer({
         setSessionId(activeSessionId);
       }
 
-      // 2. Disparar o job de separação estrutural
+      // 2. Disparar o job de separação estrutural com template anatômico
       const sepRes = await fetch(`/api/split-sessions/${activeSessionId}/separate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ structural_sensitivity: sensitivity }),
+        body: JSON.stringify({ structural_sensitivity: sensitivity, template }),
       });
       if (!sepRes.ok) {
         const err = (await sepRes.json()) as { detail?: string };
@@ -528,6 +532,76 @@ export function ModelViewer({
     }
   }, [sessionId, model.id, selectedPlateId, buildPlates]);
 
+  /**
+   * Aciona a divisão geral (General Split / BSP) para garantir que todas as peças cabem na mesa.
+   */
+  const handleGeneralSplit = useCallback(async (granularity: string = "auto") => {
+    if (!selectedPlateId) return;
+    setSplitMode("suggesting");
+    setSplitError(null);
+
+    try {
+      let activeSessionId = sessionId;
+      if (!activeSessionId) {
+        const res = await fetch("/api/split-sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model_id: model.id, build_plate_id: selectedPlateId }),
+        });
+        if (!res.ok) {
+          const err = (await res.json()) as { detail?: string };
+          throw new Error(err.detail ?? `HTTP ${res.status}`);
+        }
+        const data = (await res.json()) as { split_session_id: string };
+        activeSessionId = data.split_session_id;
+        setSessionId(activeSessionId);
+      }
+
+      const res = await fetch(`/api/split-sessions/${activeSessionId}/general-split`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ granularity }),
+      });
+      if (!res.ok) {
+        const err = (await res.json()) as { detail?: string };
+        throw new Error(err.detail ?? `HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as SuggestResponse;
+
+      const newPlanes: CutPlaneData[] = data.cut_planes.map((cp) => {
+        const q = quaternionFromNormal(cp.normal);
+        planeCounterRef.current += 1;
+        return {
+          id: `plane-${planeCounterRef.current}`,
+          px: cp.origin[0],
+          py: cp.origin[1],
+          pz: cp.origin[2],
+          ...q,
+          label: cp.label,
+          source: cp.source as CutPlaneData["source"],
+        };
+      });
+
+      setCutPlanes(newPlanes);
+      setSelectedPlaneId(null);
+
+      if (modelPositionsRef.current && newPlanes.length > 0) {
+        const plate = buildPlates.find((p) => p.id === selectedPlateId) ?? null;
+        const bboxes = computePieceBboxes(modelPositionsRef.current, newPlanes, plate);
+        setPieceBboxes(bboxes);
+        setActiveView("preview");
+      } else {
+        setPieceBboxes([]);
+        setActiveView("editor");
+      }
+
+      setSplitMode("planning");
+    } catch (err) {
+      setSplitError(String(err));
+      setSplitMode(sessionId ? "planning" : "error");
+    }
+  }, [sessionId, model.id, selectedPlateId, buildPlates]);
+
   const handleAddPlane = useCallback(() => {
     planeCounterRef.current += 1;
     const newPlane: CutPlaneData = {
@@ -594,7 +668,12 @@ export function ModelViewer({
       const res = await fetch(`/api/split-sessions/${sessionId}/execute`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cut_planes: planesPayload }),
+        body: JSON.stringify({
+          cut_planes: planesPayload,
+          generate_connectors: generateConnectors,
+          connector_tolerance_mm: 0.2,
+          connector_pin_shape: connectorPinShape,
+        }),
       });
 
       if (!res.ok) {
@@ -612,7 +691,7 @@ export function ModelViewer({
       setSplitError(String(err));
       setSplitMode("error");
     }
-  }, [sessionId, cutPlanes]);
+  }, [sessionId, cutPlanes, generateConnectors, connectorPinShape]);
 
   const handleCancel = useCallback(() => {
     setSplitMode("idle");
@@ -758,6 +837,10 @@ export function ModelViewer({
           hasSubscription={hasSubscription}
           onShowPreview={colorGroups.length > 0 ? () => setColorPreviewMode((v) => !v) : undefined}
           colorPreviewMode={colorPreviewMode}
+          onSplitOversizedPiece={() => {
+            setToolMode("linear");
+            handleStartSplit();
+          }}
         />
       )}
 
@@ -780,6 +863,7 @@ export function ModelViewer({
           onStartSplit={handleStartSplit}
           onAutoSuggest={handleAutoSuggest}
           onSeparateParts={handleSeparateParts}
+          onGeneralSplit={handleGeneralSplit}
           onAddPlane={handleAddPlane}
           onRemovePlane={handleRemovePlane}
           onSelectPlane={setSelectedPlaneId}
@@ -787,6 +871,10 @@ export function ModelViewer({
           onExecute={handleExecute}
           onCancel={handleCancel}
           onPlateChange={setSelectedPlateId}
+          generateConnectors={generateConnectors}
+          onToggleConnectors={setGenerateConnectors}
+          connectorPinShape={connectorPinShape}
+          onConnectorPinShapeChange={setConnectorPinShape}
         />
       )}
 
@@ -809,6 +897,7 @@ export function ModelViewer({
           onStartSplit={handleStartSplit}
           onAutoSuggest={handleAutoSuggest}
           onSeparateParts={handleSeparateParts}
+          onGeneralSplit={handleGeneralSplit}
           onAddPlane={handleAddPlane}
           onRemovePlane={handleRemovePlane}
           onSelectPlane={setSelectedPlaneId}
@@ -816,6 +905,10 @@ export function ModelViewer({
           onExecute={handleExecute}
           onCancel={handleCancel}
           onPlateChange={setSelectedPlateId}
+          generateConnectors={generateConnectors}
+          onToggleConnectors={setGenerateConnectors}
+          connectorPinShape={connectorPinShape}
+          onConnectorPinShapeChange={setConnectorPinShape}
         />
       )}
     </div>

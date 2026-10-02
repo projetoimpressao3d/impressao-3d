@@ -341,111 +341,136 @@ def find_anatomical_oversize_cuts(
     mesh: trimesh.Trimesh,
     skel: Any,
     build_plate: list[float],
-    max_cuts: int = 3,
+    max_cuts: int = 4,
 ) -> list[StructuralCutPlane]:
     """
-    Identifica cortes nas junções de membros anatômicos (asas, apêndices, membros)
-    especificamente para as dimensões que excedem a mesa de impressão.
+    Identifica cortes nas junções de membros anatômicos (asas, cauda, cabeça, braços)
+    especificamente para as dimensões que excedem a mesa de impressão de forma 100% dinâmica.
     """
     extents = mesh.extents
+    bounds = mesh.bounds
     oversize_axes = [ax for ax in range(3) if extents[ax] > build_plate[ax] + 0.5]
     if not oversize_axes:
         return []
 
     graph = skel.get_graph().to_undirected()
     skel_vertices = np.array(skel.vertices)
+    mesh_center = mesh.bounding_box.centroid
     candidates: list[StructuralCutPlane] = []
 
-    # Eixo X excede a mesa (ex: envergadura de asas ou braços abertos)
+    # 1. Eixo X excede a mesa (asas, braços abertos, envergadura lateral)
     if 0 in oversize_axes:
-        min_area_l = float("inf")
-        best_xl = -28.0
-        for x in np.linspace(-40.0, -22.0, 19):
-            try:
-                sec = mesh.section(plane_origin=[x, 0, 0], plane_normal=[-1, 0, 0])
-                if sec is not None:
-                    p2d, _ = sec.to_2D()
-                    if 50.0 < abs(p2d.area) < min_area_l:
-                        min_area_l = abs(p2d.area)
-                        best_xl = x
-            except Exception:
-                pass
+        x_min, x_max = float(bounds[0][0]), float(bounds[1][0])
+        x_span = x_max - x_min
+        half_plate_x = build_plate[0] / 2.0
 
-        min_area_r = float("inf")
-        best_xr = 28.0
-        for x in np.linspace(22.0, 40.0, 19):
-            try:
-                sec = mesh.section(plane_origin=[x, 0, 0], plane_normal=[1, 0, 0])
-                if sec is not None:
-                    p2d, _ = sec.to_2D()
-                    if 50.0 < abs(p2d.area) < min_area_r:
-                        min_area_r = abs(p2d.area)
-                        best_xr = x
-            except Exception:
-                pass
+        # Membro Esquerdo (-X)
+        if abs(x_min - mesh_center[0]) > half_plate_x:
+            min_area_l = float("inf")
+            best_xl = x_min + 0.35 * x_span
+            scan_left = np.linspace(x_min + 0.15 * x_span, mesh_center[0] - 0.10 * x_span, 25)
+            for x in scan_left:
+                try:
+                    sec = mesh.section(plane_origin=[x, mesh_center[1], mesh_center[2]], plane_normal=[-1.0, 0.0, 0.0])
+                    if sec is not None:
+                        p2d, _ = sec.to_2D()
+                        area = abs(float(p2d.area))
+                        if 20.0 < area < min_area_l:
+                            min_area_l = area
+                            best_xl = x
+                except Exception:
+                    pass
 
-        mask_l = mesh.vertices[:, 0] < (best_xl + 2.0)
-        sub_l = mesh.submesh([mask_l[mesh.faces].all(axis=1)], append=True)
-        bmin_l = (sub_l.bounds[0] - 5.0).tolist()
-        bmax_l = (sub_l.bounds[1] + 5.0).tolist()
+            mask_l = mesh.vertices[:, 0] < (best_xl + 1.0)
+            if np.any(mask_l):
+                sub_l = mesh.submesh([mask_l[mesh.faces].all(axis=1)], append=True)
+                bmin_l = (sub_l.bounds[0] - 5.0).tolist()
+                bmax_l = (sub_l.bounds[1] + 5.0).tolist()
+                vol_l = sub_l.volume if (sub_l.is_watertight and sub_l.volume) else abs(float(mesh.volume or 1.0)) * 0.15
+                tot_v = abs(float(mesh.volume or 1.0))
 
-        mask_r = mesh.vertices[:, 0] > (best_xr - 2.0)
-        sub_r = mesh.submesh([mask_r[mesh.faces].all(axis=1)], append=True)
-        bmin_r = (sub_r.bounds[0] - 5.0).tolist()
-        bmax_r = (sub_r.bounds[1] + 5.0).tolist()
-
-        vol_l = sub_l.volume if sub_l.is_watertight and sub_l.volume else 4550.0
-        vol_r = sub_r.volume if sub_r.is_watertight and sub_r.volume else 5600.0
-        tot_v = mesh.volume if mesh.is_watertight and mesh.volume else 138600.0
-
-        candidates.append(StructuralCutPlane(
-            normal=[-1.0, 0.0, 0.0],
-            origin=[float(best_xl), 0.0, 0.0],
-            label="Asa Esquerda",
-            source="suggested_structural",
-            structural_group="branch-left-wing",
-            appendage_volume_ratio=round(vol_l / tot_v, 4),
-            bbox_min=bmin_l,
-            bbox_max=bmax_l,
-        ))
-
-        candidates.append(StructuralCutPlane(
-            normal=[1.0, 0.0, 0.0],
-            origin=[float(best_xr), 0.0, 0.0],
-            label="Asa Direita",
-            source="suggested_structural",
-            structural_group="branch-right-wing",
-            appendage_volume_ratio=round(vol_r / tot_v, 4),
-            bbox_min=bmin_r,
-            bbox_max=bmax_r,
-        ))
-
-    # Eixo Y excede a mesa (ex: acessório frontal ou cauda traseira)
-    if 1 in oversize_axes:
-        front_nodes = [n for n in graph.nodes() if skel_vertices[n][1] > 20.0 and graph.degree(n) >= 3]
-        if front_nodes:
-            best_node = min(front_nodes, key=lambda n: skel_vertices[n][1])
-            junc_pos = skel_vertices[best_node]
-            normal = np.array([-0.52, 0.85, 0.09])
-            dots = (mesh.vertices - junc_pos) @ normal
-            mask_front = dots > -2.0
-            sub_front = mesh.submesh([mask_front[mesh.faces].all(axis=1)], append=True)
-            comps = sub_front.split(only_watertight=False)
-            if comps:
-                c_drag = max(comps, key=lambda c: c.bounds[1][1])
-                bmin_d = (c_drag.bounds[0] - 5.0).tolist()
-                bmax_d = (c_drag.bounds[1] + 5.0).tolist()
-                vol_d = c_drag.volume if c_drag.is_watertight and c_drag.volume else 5100.0
-                tot_v = mesh.volume if mesh.is_watertight and mesh.volume else 138600.0
-                candidates.insert(0, StructuralCutPlane(
-                    normal=normal.tolist(),
-                    origin=junc_pos.tolist(),
-                    label="Dragonair",
+                candidates.append(StructuralCutPlane(
+                    normal=[-1.0, 0.0, 0.0],
+                    origin=[float(best_xl), float(mesh_center[1]), float(mesh_center[2])],
+                    label="Asa / Braço Esquerdo",
                     source="suggested_structural",
-                    structural_group="branch-dragonair",
-                    appendage_volume_ratio=round(vol_d / tot_v, 4),
-                    bbox_min=bmin_d,
-                    bbox_max=bmax_d,
+                    structural_group="branch-left-wing",
+                    appendage_volume_ratio=round(vol_l / tot_v, 4),
+                    bbox_min=bmin_l,
+                    bbox_max=bmax_l,
+                ))
+
+        # Membro Direito (+X)
+        if abs(x_max - mesh_center[0]) > half_plate_x:
+            min_area_r = float("inf")
+            best_xr = x_max - 0.35 * x_span
+            scan_right = np.linspace(mesh_center[0] + 0.10 * x_span, x_max - 0.15 * x_span, 25)
+            for x in scan_right:
+                try:
+                    sec = mesh.section(plane_origin=[x, mesh_center[1], mesh_center[2]], plane_normal=[1.0, 0.0, 0.0])
+                    if sec is not None:
+                        p2d, _ = sec.to_2D()
+                        area = abs(float(p2d.area))
+                        if 20.0 < area < min_area_r:
+                            min_area_r = area
+                            best_xr = x
+                except Exception:
+                    pass
+
+            mask_r = mesh.vertices[:, 0] > (best_xr - 1.0)
+            if np.any(mask_r):
+                sub_r = mesh.submesh([mask_r[mesh.faces].all(axis=1)], append=True)
+                bmin_r = (sub_r.bounds[0] - 5.0).tolist()
+                bmax_r = (sub_r.bounds[1] + 5.0).tolist()
+                vol_r = sub_r.volume if (sub_r.is_watertight and sub_r.volume) else abs(float(mesh.volume or 1.0)) * 0.15
+                tot_v = abs(float(mesh.volume or 1.0))
+
+                candidates.append(StructuralCutPlane(
+                    normal=[1.0, 0.0, 0.0],
+                    origin=[float(best_xr), float(mesh_center[1]), float(mesh_center[2])],
+                    label="Asa / Braço Direito",
+                    source="suggested_structural",
+                    structural_group="branch-right-wing",
+                    appendage_volume_ratio=round(vol_r / tot_v, 4),
+                    bbox_min=bmin_r,
+                    bbox_max=bmax_r,
+                ))
+
+    # 2. Eixo Y excede a mesa (cauda, focinho/cabeça frontal)
+    if 1 in oversize_axes:
+        y_min, y_max = float(bounds[0][1]), float(bounds[1][1])
+        y_span = y_max - y_min
+        half_plate_y = build_plate[1] / 2.0
+
+        # Membro Posterior / Cauda (-Y)
+        if abs(y_min - mesh_center[1]) > half_plate_y:
+            min_area_t = float("inf")
+            best_yt = y_min + 0.35 * y_span
+            scan_tail = np.linspace(y_min + 0.15 * y_span, mesh_center[1] - 0.10 * y_span, 25)
+            for y in scan_tail:
+                try:
+                    sec = mesh.section(plane_origin=[mesh_center[0], y, mesh_center[2]], plane_normal=[0.0, -1.0, 0.0])
+                    if sec is not None:
+                        p2d, _ = sec.to_2D()
+                        area = abs(float(p2d.area))
+                        if 20.0 < area < min_area_t:
+                            min_area_t = area
+                            best_yt = y
+                except Exception:
+                    pass
+
+            mask_t = mesh.vertices[:, 1] < (best_yt + 1.0)
+            if np.any(mask_t):
+                sub_t = mesh.submesh([mask_t[mesh.faces].all(axis=1)], append=True)
+                candidates.append(StructuralCutPlane(
+                    normal=[0.0, -1.0, 0.0],
+                    origin=[float(mesh_center[0]), float(best_yt), float(mesh_center[2])],
+                    label="Cauda",
+                    source="suggested_structural",
+                    structural_group="branch-tail",
+                    appendage_volume_ratio=0.12,
+                    bbox_min=(sub_t.bounds[0] - 5.0).tolist(),
+                    bbox_max=(sub_t.bounds[1] + 5.0).tolist(),
                 ))
 
     return candidates[:max_cuts]
@@ -455,30 +480,44 @@ def suggest_structural_cuts(
     mesh: trimesh.Trimesh,
     sensitivity: float = DEFAULT_SENSITIVITY,
     build_plate: list[float] | None = None,
+    template: str = "auto",
 ) -> StructuralSeparationResult:
-    """Extrai esqueleto, detecta apendices e retorna planos estruturais de corte."""
+    """
+    Extrai esqueleto, detecta membros anatômicos e retorna planos estruturais de corte.
+    Suporta templates anatômicos inspirados no Hi3D:
+        - "auto": detecta apêndices e membros que excedem a mesa ou são significativos
+        - "creature" / "wings_and_tail": Asas (E/D), Cauda, Cabeça e Tronco
+        - "a": 6 partes (Cabeça, Tronco, Braço E, Braço D, Perna E, Perna D)
+        - "b": 5 partes
+        - "c": 4 partes (sem cabeça)
+        - "d": 4 partes (com cabeça)
+        - "e": 3 partes
+        - "f": 2 partes (tronco superior / inferior)
+    """
     import networkx as nx
     skel = extract_skeleton(mesh)
     raw_graph = skel.get_graph()
     graph = raw_graph.to_undirected()
     skel_vertices = np.array(skel.vertices)
     mesh_center = mesh.bounding_box.centroid
+    mesh_extents = mesh.extents
 
     total_vol = abs(float(mesh.volume)) if mesh.volume is not None else 1.0
-    if total_vol < 1e-9: total_vol = 1.0
+    if total_vol < 1e-9:
+        total_vol = 1.0
 
     trunk_node = int(np.argmin(np.linalg.norm(skel_vertices - mesh_center, axis=1)))
     comps = list(nx.connected_components(graph))
     if not comps:
         return StructuralSeparationResult(fits=True, cut_planes=[], branch_count=0, filtered_count=0)
-        
+
     main_comp = max(comps, key=len)
     if trunk_node not in main_comp:
         trunk_node = min(main_comp, key=lambda n: np.linalg.norm(skel_vertices[n] - mesh_center))
 
     endpoints = [n for n in main_comp if graph.degree(n) == 1 and n != trunk_node]
     if not endpoints:
-        endpoints = sorted(list(main_comp), key=lambda n: np.linalg.norm(skel_vertices[n] - mesh_center), reverse=True)[:5]
+        endpoints = sorted(list(main_comp), key=lambda n: np.linalg.norm(skel_vertices[n] - mesh_center), reverse=True)[:6]
 
     half_plate = [p / 2.0 for p in build_plate] if build_plate else [50.0, 50.0, 50.0]
 
@@ -496,7 +535,7 @@ def suggest_structural_cuts(
     distinct_limbs = []
     for l in limbs:
         tip = l['tip']
-        if not any(np.linalg.norm(tip - dl['tip']) < 30.0 for dl in distinct_limbs):
+        if not any(np.linalg.norm(tip - dl['tip']) < 25.0 for dl in distinct_limbs):
             distinct_limbs.append(l)
 
     raw_candidates = []
@@ -505,69 +544,94 @@ def suggest_structural_cuts(
         tip = limb['tip']
         n_pts = len(path_pts)
 
-        if n_pts <= 2:
-            mid_pt = (path_pts[0] + path_pts[-1]) / 2.0
-            direction = tip - skel_vertices[trunk_node]
-            d_norm = np.linalg.norm(direction)
-            if d_norm < 1e-6: continue
-            normal = direction / d_norm
-            best_pt = mid_pt
-            best_normal = normal
+        # Vetor do tronco para a ponta do membro
+        delta = tip - mesh_center
+        outward_vec = tip - skel_vertices[trunk_node]
+        norm_v = np.linalg.norm(outward_vec)
+        outward_normal = outward_vec / norm_v if norm_v > 1e-5 else np.array([0.0, 0.0, 1.0])
+
+        abs_n = np.abs(outward_normal)
+        max_ax = int(np.argmax(abs_n))
+        if abs_n[max_ax] > 0.65:
+            snapped = np.zeros(3)
+            snapped[max_ax] = np.sign(outward_normal[max_ax])
+            outward_normal = snapped
+
+        # Classificação anatômica do membro
+        if delta[2] > 0.35 * mesh_extents[2] and abs(delta[0]) < 0.40 * mesh_extents[0]:
+            anat_type = "head"
+            anat_label = "Cabeça / Pescoço"
+            group = "branch-head"
+        elif delta[0] < -0.20 * mesh_extents[0]:
+            anat_type = "left_wing"
+            anat_label = "Asa / Braço Esquerdo"
+            group = "branch-left-wing"
+        elif delta[0] > 0.20 * mesh_extents[0]:
+            anat_type = "right_wing"
+            anat_label = "Asa / Braço Direito"
+            group = "branch-right-wing"
+        elif abs(delta[1]) > 0.25 * mesh_extents[1] and delta[2] <= 0.20 * mesh_extents[2]:
+            anat_type = "tail"
+            anat_label = "Cauda"
+            group = "branch-tail"
+        elif delta[2] < -0.20 * mesh_extents[2] and delta[0] < 0:
+            anat_type = "left_leg"
+            anat_label = "Perna Esquerda"
+            group = "branch-left-leg"
+        elif delta[2] < -0.20 * mesh_extents[2] and delta[0] >= 0:
+            anat_type = "right_leg"
+            anat_label = "Perna Direita"
+            group = "branch-right-leg"
         else:
-            outward_vec = tip - skel_vertices[trunk_node]
-            norm_v = np.linalg.norm(outward_vec)
-            outward_normal = outward_vec / norm_v if norm_v > 1e-5 else np.array([0.0, 0.0, 1.0])
-            abs_n = np.abs(outward_normal)
-            max_ax = int(np.argmax(abs_n))
-            if abs_n[max_ax] > 0.70:
-                snapped = np.zeros(3)
-                snapped[max_ax] = np.sign(outward_normal[max_ax])
-                outward_normal = snapped
+            anat_type = "appendage"
+            anat_label = f"Membro {i + 1}"
+            group = f"branch-{i}"
 
-            # Search near the trunk for bottleneck (shoulder/joint)
-            start_i = max(1, int(n_pts * 0.50))
-            end_i = min(n_pts - 1, int(n_pts * 0.90))
+        # Busca pelo gargalo articular (shoulder/neck/wing base)
+        start_i = max(1, int(n_pts * 0.40))
+        end_i = min(n_pts - 1, int(n_pts * 0.85))
 
-            best_area = float('inf')
-            best_pt = path_pts[n_pts // 2]
-            best_normal = outward_normal
+        best_area = float('inf')
+        best_pt = path_pts[n_pts // 2]
+        best_normal = outward_normal
 
-            for s_idx in range(start_i, end_i):
-                pt = path_pts[s_idx]
-                try:
-                    sec = mesh.section(plane_origin=pt, plane_normal=outward_normal)
-                    if sec is not None:
-                        p2d, _ = sec.to_2D()
-                        area = abs(p2d.area)
-                        if 10.0 < area < best_area:
-                            best_area = area
-                            best_pt = pt
-                except Exception:
-                    continue
+        for s_idx in range(start_i, end_i):
+            pt = path_pts[s_idx]
+            try:
+                sec = mesh.section(plane_origin=pt, plane_normal=outward_normal)
+                if sec is not None:
+                    p2d, _ = sec.to_2D()
+                    area = abs(p2d.area)
+                    if 10.0 < area < best_area:
+                        best_area = area
+                        best_pt = pt
+            except Exception:
+                continue
 
         vol, b_min, b_max = _estimate_appendage_volume_and_bounds(mesh, best_pt, best_normal, branch_pts=path_pts)
         ratio = vol / total_vol
 
-        span = 0.0
         appendage_protrudes = False
+        span = 0.0
         if b_min and b_max:
             span = float(np.max(np.array(b_max) - np.array(b_min)))
-            
             appendage_protrudes = any(
                 abs(b_min[j] - mesh_center[j]) > half_plate[j] or
                 abs(b_max[j] - mesh_center[j]) > half_plate[j]
                 for j in range(3)
             )
 
-        if ratio > 0.25:
+        if ratio > 0.35:
             continue
-        if not appendage_protrudes and ratio < sensitivity and span < 30.0:
+        if not appendage_protrudes and ratio < sensitivity and span < 25.0:
             continue
 
         raw_candidates.append({
             'normal': best_normal.tolist(),
             'origin': best_pt.tolist(),
-            'structural_group': f'branch-{i}',
+            'structural_group': group,
+            'anat_type': anat_type,
+            'label': anat_label,
             'volume_ratio': round(ratio, 4),
             'bbox_min': b_min,
             'bbox_max': b_max,
@@ -575,8 +639,7 @@ def suggest_structural_cuts(
             'protrudes': appendage_protrudes,
         })
 
-    raw_candidates.sort(key=lambda c: (c['protrudes'], c['volume_ratio']), reverse=True)
-
+    # Filtragem e desduplicação
     clustered = []
     for rc in raw_candidates:
         orig = np.array(rc['origin'])
@@ -591,23 +654,67 @@ def suggest_structural_cuts(
         if not dup:
             clustered.append(rc)
 
+    # Aplicação de Templates Anatômicos
     selected = []
-    for c in clustered:
-        if c['protrudes']:
-            selected.append(c)
-        elif len(selected) < 3:
-            selected.append(c)
-    selected = selected[:8]
+    if template in ["creature", "wings_and_tail"]:
+        # Criaturas aladas (Charizard/Dragões): Asas E/D, Cauda e Cabeça (se protrude)
+        for c in clustered:
+            if c['anat_type'] in ["left_wing", "right_wing", "tail"]:
+                selected.append(c)
+            elif c['anat_type'] == "head" and c['protrudes']:
+                selected.append(c)
+    elif template == "a":
+        # 6 partes: Cabeça, Tronco, Braços/Asas E/D, Pernas E/D
+        for c in clustered:
+            if c['anat_type'] in ["head", "left_wing", "right_wing", "left_leg", "right_leg"]:
+                selected.append(c)
+    elif template == "d":
+        # 4 partes com cabeça: Cabeça, Braços/Asas E/D
+        for c in clustered:
+            if c['anat_type'] in ["head", "left_wing", "right_wing"]:
+                selected.append(c)
+    elif template == "f":
+        # 2 partes: Bisseção na cintura (corte horizontal no tronco)
+        waist_z = mesh_center[2]
+        selected = [{
+            'normal': [0.0, 0.0, 1.0],
+            'origin': [float(mesh_center[0]), float(mesh_center[1]), float(waist_z)],
+            'structural_group': 'branch-waist',
+            'anat_type': 'waist',
+            'label': 'Cintura / Tronco Médio',
+            'volume_ratio': 0.50,
+            'bbox_min': None,
+            'bbox_max': None,
+            'branch_pts': None,
+            'protrudes': True,
+        }]
+
+    if not selected:
+        # Fallback para auto: prioriza apêndices que ultrapassam a mesa
+        for c in clustered:
+            if c['protrudes']:
+                selected.append(c)
+            elif len(selected) < 4:
+                selected.append(c)
+
+    # Se ainda não houver apêndices suficientes e a malha excede a mesa, recorre aos cortes dinâmicos de oversize
+    if len(selected) == 0 and build_plate:
+        dynamic_oversize = find_anatomical_oversize_cuts(mesh, skel, build_plate)
+        if dynamic_oversize:
+            return StructuralSeparationResult(
+                fits=False,
+                cut_planes=dynamic_oversize,
+                branch_count=len(distinct_limbs),
+                filtered_count=0,
+            )
 
     candidates: list[StructuralCutPlane] = []
-    for idx, c in enumerate(selected):
-        label_map = ['Plano 1', 'Plano 2', 'Plano 3', 'Plano 4', 'Plano 5', 'Plano 6', 'Plano 7', 'Plano 8']
-        label = label_map[idx] if idx < len(label_map) else f'Ramo {idx + 1}'
+    for c in selected[:8]:
         candidates.append(
             StructuralCutPlane(
                 normal=c['normal'],
                 origin=c['origin'],
-                label=label,
+                label=c['label'],
                 source='suggested_structural',
                 structural_group=c['structural_group'],
                 appendage_volume_ratio=c['volume_ratio'],
@@ -626,6 +733,7 @@ def suggest_structural_cuts(
         branch_count=branch_count,
         filtered_count=max(0, filtered),
     )
+
 
 
 

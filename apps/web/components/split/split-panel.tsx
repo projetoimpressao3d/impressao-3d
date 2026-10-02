@@ -32,7 +32,8 @@ interface SplitPanelProps {
   // Callbacks
   onStartSplit: () => void;
   onAutoSuggest: () => void;
-  onSeparateParts: (sensitivity: number) => void;
+  onSeparateParts: (sensitivity: number, template: string) => void;
+  onGeneralSplit: (granularity: string) => void;
   onAddPlane: () => void;
   onRemovePlane: (id: string) => void;
   onSelectPlane: (id: string | null) => void;
@@ -40,6 +41,12 @@ interface SplitPanelProps {
   onExecute: () => void;
   onCancel: () => void;
   onPlateChange: (id: string) => void;
+
+  // Conectores mecânicos
+  generateConnectors?: boolean;
+  onToggleConnectors?: (enabled: boolean) => void;
+  connectorPinShape?: "hex" | "triangle" | "cylinder";
+  onConnectorPinShapeChange?: (shape: "hex" | "triangle" | "cylinder") => void;
 }
 
 /** Formata dimensões em mm com 1 casa decimal. */
@@ -68,6 +75,7 @@ export function SplitPanel({
   onStartSplit,
   onAutoSuggest,
   onSeparateParts,
+  onGeneralSplit,
   onAddPlane,
   onRemovePlane,
   onSelectPlane,
@@ -75,6 +83,10 @@ export function SplitPanel({
   onExecute,
   onCancel,
   onPlateChange,
+  generateConnectors = true,
+  onToggleConnectors,
+  connectorPinShape = "hex",
+  onConnectorPinShapeChange,
 }: SplitPanelProps) {
   const selectedPlate = buildPlates.find((p) => p.id === selectedPlateId);
   const isSuggesting = splitMode === "suggesting";
@@ -82,6 +94,10 @@ export function SplitPanel({
 
   // Slider de sensibilidade (% do volume total mínimo para um apêndice ser separável)
   const [sensitivity, setSensitivity] = useState<number>(5); // padrão 5% (ideal para asas, caudas e membros)
+  // Template anatômico para Character Split (Hi3D)
+  const [characterTemplate, setCharacterTemplate] = useState<string>("creature");
+  // Granularidade para General Split (Hi3D)
+  const [generalGranularity, setGeneralGranularity] = useState<string>("auto");
 
   // ── Estado: idle ─────────────────────────────────────────────────────────
   if (splitMode === "idle") {
@@ -304,19 +320,18 @@ export function SplitPanel({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {/* Botão de análise automática */}
             <button
               onClick={onAutoSuggest}
-              disabled={isSuggesting}
-              className="flex items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={isSuggesting || isSeparating}
+              className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isSuggesting ? (
                 <>
-                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-violet-600 border-t-transparent" />
                   Analisando…
                 </>
               ) : (
-                <>🤖 Cortes Automáticos</>
+                <>🤖 Gargalos em 18 Eixos</>
               )}
             </button>
             <button
@@ -326,6 +341,161 @@ export function SplitPanel({
               Cancelar
             </button>
           </div>
+        </div>
+
+        {/* ── Painéis Especializados de Divisão (Cenário 1 e Cenário 2) ── */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {/* Cenário 1: Character Split (Divisão Anatômica por Membros - Hi3D) */}
+          <div className="flex flex-col justify-between rounded-xl border border-emerald-200 bg-emerald-50/70 p-3.5 shadow-sm">
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-950">
+                  <span>🦴</span> Divisão Anatômica (Character Split)
+                </span>
+                <span className="rounded bg-emerald-200/60 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-emerald-800">
+                  Hi3D Model
+                </span>
+              </div>
+              <p className="mt-1 text-[11px] text-emerald-800 leading-relaxed">
+                Reconhece a anatomia do personagem e secciona asas, cauda, cabeça ou membros nos gargalos articulares.
+              </p>
+
+              <div className="mt-2.5 space-y-1">
+                <label className="block text-[10px] font-semibold uppercase tracking-wider text-emerald-900">
+                  Template Anatômico
+                </label>
+                <select
+                  value={characterTemplate}
+                  onChange={(e) => setCharacterTemplate(e.target.value)}
+                  className="w-full rounded-lg border border-emerald-300 bg-white px-2 py-1.5 text-xs text-gray-800 shadow-sm focus:border-emerald-500 focus:outline-none"
+                >
+                  <option value="creature">🐉 Criatura Alada (Asas, Cauda, Cabeça)</option>
+                  <option value="a">👤 Template A: 6 Partes (Cabeça, Tronco, Membros)</option>
+                  <option value="b">👤 Template B: 5 Partes</option>
+                  <option value="d">👤 Template D: 4 Partes com Cabeça</option>
+                  <option value="f">🥋 Template F: 2 Partes (Cintura)</option>
+                  <option value="auto">✨ Detecção Automática</option>
+                </select>
+              </div>
+
+              <div className="mt-2.5">
+                <div className="flex items-center justify-between text-[11px] text-emerald-900">
+                  <span>Sensibilidade de apêndices:</span>
+                  <span className="font-semibold font-mono">{sensitivity}%</span>
+                </div>
+                <input
+                  type="range"
+                  min={1}
+                  max={25}
+                  value={sensitivity}
+                  onChange={(e) => setSensitivity(Number(e.target.value))}
+                  className="mt-1 w-full accent-emerald-600"
+                />
+              </div>
+            </div>
+
+            <button
+              onClick={() => onSeparateParts(sensitivity / 100, characterTemplate)}
+              disabled={isSeparating || isSuggesting}
+              className="mt-3.5 flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isSeparating ? (
+                <>
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                  Analisando anatomia...
+                </>
+              ) : (
+                <>🦴 Detectar Membros Anatômicos</>
+              )}
+            </button>
+          </div>
+
+          {/* Cenário 2: General Split (Divisão Geral por BSP para Caber na Mesa) */}
+          <div className="flex flex-col justify-between rounded-xl border border-violet-200 bg-violet-50/70 p-3.5 shadow-sm">
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-xs font-semibold text-violet-950">
+                  <span>📐</span> Divisão Geral (General Split)
+                </span>
+                <span className="rounded bg-violet-200/60 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-violet-800">
+                  Auto-Fit BSP
+                </span>
+              </div>
+              <p className="mt-1 text-[11px] text-violet-800 leading-relaxed">
+                Decomposição recursiva para qualquer objeto aleatório ou geométrico caber estritamente na mesa útil.
+              </p>
+
+              <div className="mt-2.5 space-y-1">
+                <label className="block text-[10px] font-semibold uppercase tracking-wider text-violet-900">
+                  Nível de Granularidade
+                </label>
+                <select
+                  value={generalGranularity}
+                  onChange={(e) => setGeneralGranularity(e.target.value)}
+                  className="w-full rounded-lg border border-violet-300 bg-white px-2 py-1.5 text-xs text-gray-800 shadow-sm focus:border-violet-500 focus:outline-none"
+                >
+                  <option value="auto">🎯 Auto-Fit (Garantia de Encaixe na Mesa)</option>
+                  <option value="low">⚡ Baixa (Mínimo de Cortes)</option>
+                  <option value="medium">⚖️ Média (Margem de Segurança 10%)</option>
+                  <option value="high">🧩 Alta (Peças Menores Modulares)</option>
+                </select>
+              </div>
+
+              <p className="mt-3 text-[11px] text-violet-700 leading-relaxed">
+                Varre gargalos de corte ao longo dos eixos que excedem o volume da impressora selecionada.
+              </p>
+            </div>
+
+            <button
+              onClick={() => onGeneralSplit(generalGranularity)}
+              disabled={isSuggesting || isSeparating}
+              className="mt-3.5 flex w-full items-center justify-center gap-1.5 rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isSuggesting ? (
+                <>
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                  Calculando partição...
+                </>
+              ) : (
+                <>📐 Fatiar para Caber na Mesa</>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* ── Conectores Mecânicos Macho/Fêmea (Interlock Connectors) ── */}
+        <div className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-3 shadow-sm">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={generateConnectors}
+                onChange={(e) => onToggleConnectors?.(e.target.checked)}
+                className="h-4 w-4 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span className="text-xs font-semibold text-indigo-950">
+                🧩 Gerar Conectores Mecânicos Macho/Fêmea (0.2mm folga PLA/PETG)
+              </span>
+            </label>
+
+            {generateConnectors && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-indigo-800 font-medium">Formato:</span>
+                <select
+                  value={connectorPinShape}
+                  onChange={(e) => onConnectorPinShapeChange?.(e.target.value as "hex" | "triangle" | "cylinder")}
+                  className="rounded border border-indigo-300 bg-white px-2 py-1 text-xs text-gray-800 shadow-sm focus:border-indigo-500 focus:outline-none"
+                >
+                  <option value="hex">Hexagonal (Anti-rotação)</option>
+                  <option value="triangle">Triangular</option>
+                  <option value="cylinder">Cilíndrico</option>
+                </select>
+              </div>
+            )}
+          </div>
+          <p className="mt-1 text-[10px] text-indigo-700 pl-6">
+            Gera pinos com chanfro guia e furos conjugados com profundidade extra para colagem e montagem perfeita pós-impressão.
+          </p>
         </div>
 
         {/* Banner de progresso durante análise automática */}

@@ -39,6 +39,10 @@ class SeparateRequest(BaseModel):
         le=1.0,
         description="Limiar minimo de volume (fracao do total) para apendice ser separavel.",
     )
+    template: str = Field(
+        default="auto",
+        description="Template anatômico: 'auto', 'creature', 'a', 'b', 'c', 'd', 'e', 'f'.",
+    )
 
 
 class CutPlaneOut(BaseModel):
@@ -105,12 +109,12 @@ async def start_structural_separation(
 
     # Disparar job em background (nao bloquear a resposta)
     asyncio.create_task(
-        _background_separate(session_id, payload.user_id, payload.structural_sensitivity)
+        _background_separate(session_id, payload.user_id, payload.structural_sensitivity, payload.template)
     )
 
     logger.info(
-        "Separacao estrutural iniciada: session=%s sensitivity=%.3f",
-        session_id, payload.structural_sensitivity,
+        "Separacao estrutural iniciada: session=%s sensitivity=%.3f template=%s",
+        session_id, payload.structural_sensitivity, payload.template,
     )
     return SeparateResponse(split_session_id=session_id, status="processing")
 
@@ -169,6 +173,7 @@ async def _background_separate(
     session_id: str,
     user_id: str,
     sensitivity: float,
+    template: str = "auto",
 ) -> None:
     """Job assincrono: extrai esqueleto, detecta apendices, encadeia suggest_cuts."""
     supabase = get_supabase_client()
@@ -205,10 +210,10 @@ async def _background_separate(
         mesh.apply_translation(-bbox_center)
 
         # 3. Extrair esqueleto e detectar candidatos estruturais
-        logger.info("_background_separate: extraindo esqueleto...")
+        logger.info("_background_separate: extraindo esqueleto (template=%s)...", template)
         plate_list = [plate_dims["x"], plate_dims["y"], plate_dims["z"]]
         structural_result = await asyncio.to_thread(
-            suggest_structural_cuts, mesh, sensitivity, plate_list
+            suggest_structural_cuts, mesh, sensitivity, plate_list, template
         )
 
         structural_planes: list[StructuralCutPlane] = structural_result.cut_planes

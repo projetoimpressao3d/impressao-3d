@@ -30,6 +30,7 @@ interface ColorSplitPanelProps {
   hasSubscription: boolean;
   onShowPreview?: () => void;
   colorPreviewMode?: boolean;
+  onSplitOversizedPiece?: (plate: PlateOutput) => void;
 }
 
 
@@ -55,6 +56,7 @@ export function ColorSplitPanel({
   hasSubscription,
   onShowPreview,
   colorPreviewMode = false,
+  onSplitOversizedPiece,
 }: ColorSplitPanelProps) {
 
   const [colorInfo, setColorInfo] = useState<{
@@ -328,9 +330,20 @@ export function ColorSplitPanel({
                     </p>
                     <p className="text-[10px] text-gray-400 font-mono">{sizeStr}</p>
                     {!plate.fits_in_plate && (
-                      <p className="text-[10px] text-amber-400">
-                        ⚠️ Maior que a mesa ({selectedPlate?.name})
-                      </p>
+                      <div className="mt-1 flex flex-col items-start gap-1">
+                        <p className="text-[10px] text-amber-400">
+                          ⚠️ Maior que a mesa ({selectedPlate?.name})
+                        </p>
+                        {onSplitOversizedPiece && (
+                          <button
+                            type="button"
+                            onClick={() => onSplitOversizedPiece(plate)}
+                            className="inline-flex items-center gap-1 rounded bg-amber-600/90 px-2 py-0.5 text-[10px] font-medium text-white transition hover:bg-amber-500 shadow-sm"
+                          >
+                            ✂️ Fatiar Peça para Caber
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                   {hasSubscription ? (

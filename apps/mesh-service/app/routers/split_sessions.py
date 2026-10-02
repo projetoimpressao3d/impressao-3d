@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from app.deps import get_supabase_client, verify_internal_token
 from app.mesh.cutter import CutPlaneInput, cut_mesh_by_planes
 from app.mesh.geometry import Dimensions, compute_split_plan
+from app.mesh.general_splitter import suggest_general_split
 from app.mesh.natural_cuts import SuggestedCutPlane, suggest_cuts
 from app.mesh.repair import load_and_normalize, repair_mesh
 from app.storage import create_download_url, download_to_tempfile, upload_bytes
@@ -308,6 +309,103 @@ async def suggest_split_session(
     )
 
 
+class GeneralSplitRequest(BaseModel):
+    """Payload para acionar divisão geral (General Split) garantindo encaixe na mesa."""
+    user_id: str
+    granularity: str = "auto"  # "auto" | "low" | "medium" | "high"
+
+
+@router.post(
+    "/split-sessions/{session_id}/general-split",
+    response_model=SuggestResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Divisão geral para objetos aleatórios com garantia de encaixe na mesa",
+    description=(
+        "Aplica Decomposição Recursiva no Espaço (BSP) com detecção de gargalos naturais "
+        "para que 100% das peças caibam no volume útil da mesa especificada."
+    ),
+)
+async def run_general_split(
+    session_id: str,
+    payload: GeneralSplitRequest,
+    _auth: None = Depends(verify_internal_token),
+) -> SuggestResponse:
+    """Divisão geral algorítmica por BSP com parada garantida na mesa."""
+    supabase = _get_supabase_client()
+
+    try:
+        sess_result = (
+            supabase.table("split_sessions")
+            .select("id, model_id, build_plate_id, user_id")
+            .eq("id", session_id)
+            .eq("user_id", payload.user_id)
+            .single()
+            .execute()
+        )
+        session_row = sess_result.data
+    except Exception as exc:
+        logger.warning("Sessao nao encontrada: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sessao de corte nao encontrada.",
+        ) from exc
+
+    model = _fetch_model(supabase, session_row["model_id"], payload.user_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Modelo nao encontrado.")
+
+    plate = _fetch_build_plate(supabase, session_row["build_plate_id"], payload.user_id)
+    if plate is None:
+        raise HTTPException(status_code=404, detail="Mesa de trabalho nao encontrada.")
+
+    plate_dims_dict = {
+        "x": float(plate["build_volume_x_mm"]),
+        "y": float(plate["build_volume_y_mm"]),
+        "z": float(plate["build_volume_z_mm"]),
+    }
+
+    try:
+        download_url = create_download_url(supabase, model["storage_path"], expires_in=600)
+        tmp_path = await download_to_tempfile(download_url, model["storage_path"])
+        mesh = load_and_normalize(tmp_path)
+        bbox_center = mesh.bounds.mean(axis=0)
+        mesh.apply_translation(-bbox_center)
+    except Exception as exc:
+        logger.error("Falha ao baixar/carregar malha para general split: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Nao foi possivel baixar o modelo para analise: {exc}",
+        ) from exc
+
+    logger.info("Iniciando suggest_general_split para sessao %s (granularity=%s)", session_id, payload.granularity)
+    gran = payload.granularity if payload.granularity in ["auto", "low", "medium", "high"] else "auto"
+    result = suggest_general_split(mesh, plate_dims_dict, granularity=gran)
+
+    cut_planes_json: list[dict] = [
+        {"normal": cp.normal, "origin": cp.origin, "label": cp.label, "source": cp.source}
+        for cp in result.cut_planes
+    ]
+    try:
+        supabase.table("split_sessions").update(
+            {"cut_planes": cut_planes_json}
+        ).eq("id", session_id).execute()
+    except Exception as exc:
+        logger.warning("Falha ao atualizar cut_planes no banco: %s", exc)
+
+    natural_count = sum(1 for cp in result.cut_planes if cp.source == "suggested_natural")
+    grid_count = sum(1 for cp in result.cut_planes if cp.source == "suggested_grid_fallback")
+
+    return SuggestResponse(
+        split_session_id=session_id,
+        cut_planes=[
+            CutPlaneOut(normal=cp.normal, origin=cp.origin, label=cp.label, source=cp.source)
+            for cp in result.cut_planes
+        ],
+        natural_count=natural_count,
+        grid_count=grid_count,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers (separados para facilitar mock nos testes)
 # ---------------------------------------------------------------------------
@@ -423,6 +521,9 @@ class ExecuteRequest(BaseModel):
 
     user_id: str
     cut_planes: list[ExecuteCutPlane]
+    generate_connectors: bool = True
+    connector_tolerance_mm: float = 0.2
+    connector_pin_shape: str = "hex"
 
 
 class PieceOut(BaseModel):
@@ -545,9 +646,15 @@ async def execute_split(
             for cp in payload.cut_planes
         ]
 
-        # 8. Executar corte booleano com manifold3d (capping automático)
-        pieces = cut_mesh_by_planes(mesh, cut_plane_inputs)
-        logger.info("Corte concluído: %d peças geradas", len(pieces))
+        # 8. Executar corte booleano com manifold3d (capping automático e conectores mecânicos)
+        pieces = cut_mesh_by_planes(
+            mesh,
+            cut_plane_inputs,
+            generate_connectors=payload.generate_connectors,
+            connector_tolerance_mm=payload.connector_tolerance_mm,
+            connector_pin_shape=payload.connector_pin_shape,
+        )
+        logger.info("Corte concluído: %d peças geradas (conectores=%s)", len(pieces), payload.generate_connectors)
 
         # 9. Validar, fazer upload e inserir cada peça no banco
         plate_dims = {

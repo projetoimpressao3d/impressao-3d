@@ -27,6 +27,8 @@ import trimesh
 if TYPE_CHECKING:
     from manifold3d import Manifold
 
+from app.mesh.connectors import add_interlock_connector
+
 logger = logging.getLogger(__name__)
 
 
@@ -85,6 +87,9 @@ def _clean_piece_shards(piece: trimesh.Trimesh, min_volume: float = 150.0) -> tr
 def cut_mesh_by_planes(
     mesh: trimesh.Trimesh,
     planes: list[CutPlaneInput],
+    generate_connectors: bool = True,
+    connector_tolerance_mm: float = 0.2,
+    connector_pin_shape: str = "hex",
 ) -> list[trimesh.Trimesh]:
     """
     Aplica N planos de corte sequencialmente usando manifold3d.
@@ -234,6 +239,21 @@ def cut_mesh_by_planes(
                 f"manifold3d falhou no corte {i + 1}/{len(planes)}: {exc}. "
                 "Certifique-se de que o plano intersecta a geometria e a malha é válida."
             ) from exc
+
+        if generate_connectors:
+            try:
+                ref_mesh = _manifold_to_trimesh(current)
+                top, bottom = add_interlock_connector(
+                    top,
+                    bottom,
+                    reference_mesh=ref_mesh,
+                    plane_origin=plane.origin,
+                    plane_normal=n,
+                    tolerance_mm=connector_tolerance_mm,
+                    pin_shape=connector_pin_shape,
+                )
+            except Exception as conn_err:
+                logger.warning("Falha ao gerar conector para o plano %d (%s): %s", i + 1, plane.label, conn_err)
 
         accumulated.append(top)
         current = bottom  # continuar particionando o fragmento inferior

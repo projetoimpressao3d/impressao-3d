@@ -1,16 +1,14 @@
 /**
- * POST /api/split-sessions/[id]/separate
- * Proxy para o backend Python que inicia o job assíncrono de separação estrutural.
- * Retorna 202 imediatamente — o frontend faz polling em /status.
+ * POST /api/split-sessions/[id]/general-split
+ * Proxy para o backend Python que executa o General Split (BSP) garantindo que 100% das peças caibam na mesa.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
-interface SeparatePayload {
-  structural_sensitivity: number;
-  template?: string;
+interface GeneralSplitPayload {
+  granularity?: "auto" | "low" | "medium" | "high";
 }
 
 export async function POST(
@@ -23,19 +21,16 @@ export async function POST(
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) {
-    return NextResponse.json({ detail: "Nao autenticado." }, { status: 401 });
+    return NextResponse.json({ detail: "Não autenticado." }, { status: 401 });
   }
 
-  const body = (await req.json()) as Partial<SeparatePayload>;
-  const sensitivity = typeof body.structural_sensitivity === "number"
-    ? body.structural_sensitivity
-    : 0.07;
-  const template = body.template ?? "auto";
+  const body = (await req.json().catch(() => ({}))) as Partial<GeneralSplitPayload>;
+  const granularity = body.granularity ?? "auto";
 
   const backendUrl = process.env.PYTHON_BACKEND_URL ?? "http://localhost:8000";
   const token = process.env.PYTHON_BACKEND_INTERNAL_TOKEN ?? "";
 
-  const res = await fetch(`${backendUrl}/split-sessions/${sessionId}/separate`, {
+  const res = await fetch(`${backendUrl}/split-sessions/${sessionId}/general-split`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -43,8 +38,7 @@ export async function POST(
     },
     body: JSON.stringify({
       user_id: user.id,
-      structural_sensitivity: sensitivity,
-      template,
+      granularity,
     }),
   });
 
