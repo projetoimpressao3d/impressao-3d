@@ -377,31 +377,54 @@ async def subdivide_color_piece(
             target_piece = max(split_result.pieces, key=lambda p: len(p.mesh.faces))
 
         # 5. Calcular planos de corte na peça alvo
+        cut_inputs: list[CutPlaneInput] = []
         if payload.mode == "character":
-            cut_planes_raw = suggest_structural_cuts(
-                target_piece.mesh,
-                sensitivity=payload.structural_sensitivity,
-                template=payload.character_template,
-            )
-        else:
-            cut_planes_raw = suggest_general_split(
-                target_piece.mesh,
-                plate_x,
-                plate_y,
-                plate_z,
-                granularity=payload.general_granularity,
-            )
+            try:
+                struct_res = suggest_structural_cuts(
+                    target_piece.mesh,
+                    sensitivity=payload.structural_sensitivity,
+                    build_plate=[plate_x, plate_y, plate_z],
+                    template=payload.character_template,
+                )
+                for cp in struct_res.cut_planes:
+                    cut_inputs.append(
+                        CutPlaneInput(
+                            normal=cp.normal,
+                            origin=cp.origin,
+                            label=cp.label,
+                            bbox_min=cp.bbox_min,
+                            bbox_max=cp.bbox_max,
+                            branch_pts=cp.branch_pts,
+                        )
+                    )
+            except Exception as e:
+                logger.warning("Falha ao sugerir cortes estruturais no modo character: %s", e)
 
-        cut_inputs = [
-            CutPlaneInput(
-                normal=cp["normal"],
-                origin=cp["origin"],
-                label=cp.get("label", ""),
-                bbox_min=cp.get("bbox_min"),
-                bbox_max=cp.get("bbox_max"),
+        # Fallback para general split se for o modo general ou se não encontrou cortes anatômicos
+        if not cut_inputs:
+            gran = payload.general_granularity if payload.general_granularity in ["auto", "low", "medium", "high"] else "auto"
+            try:
+                gen_res = suggest_general_split(
+                    target_piece.mesh,
+                    plate_dims={"x": plate_x, "y": plate_y, "z": plate_z},
+                    granularity=gran,
+                )
+                for cp in gen_res.cut_planes:
+                    cut_inputs.append(
+                        CutPlaneInput(
+                            normal=cp.normal,
+                            origin=cp.origin,
+                            label=cp.label,
+                        )
+                    )
+            except Exception as e:
+                logger.warning("Falha ao sugerir cortes gerais: %s", e)
+
+        if not cut_inputs:
+            raise HTTPException(
+                status_code=400,
+                detail="Nenhum plano de corte foi gerado para esta peça nas dimensões da mesa informada.",
             )
-            for cp in cut_planes_raw
-        ]
 
         # 6. Executar cortes com conectores mecânicos na peça
         sub_meshes = cut_mesh_by_planes(
@@ -417,7 +440,7 @@ async def subdivide_color_piece(
 
         # Sub-peças da cor cortada
         for i, sm in enumerate(sub_meshes):
-            lbl = cut_planes_raw[i].get("label", f"Parte_{i+1}") if i < len(cut_planes_raw) else f"Parte_{i+1}"
+            lbl = cut_inputs[i].label if i < len(cut_inputs) else f"Parte {i+1}"
             all_pieces_meshes.append((
                 sm,
                 target_piece.filament.color_hex,
@@ -506,5 +529,14 @@ async def subdivide_color_piece(
             unified_file_name=unified_fname,
         )
 
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Erro ao subdividir peça de cor para o modelo %s: %s", model_id, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro interno ao fatiar peça: {exc}",
+        ) from exc
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+

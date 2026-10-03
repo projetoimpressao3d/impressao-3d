@@ -41,6 +41,7 @@ class CutPlaneInput:
     label: str = field(default="")
     bbox_min: list[float] | None = field(default=None)
     bbox_max: list[float] | None = field(default=None)
+    branch_pts: list[list[float]] | None = field(default=None)
 
 
 def _trimesh_to_manifold(mesh: trimesh.Trimesh) -> "Manifold":
@@ -154,9 +155,10 @@ def cut_mesh_by_planes(
                 # Corte Local Delimitado (Bounded Volume Cut):
                 # Tentar construir uma cápsula justa ao redor do esqueleto do apêndice para evitar engolir partes próximas
                 capsule_created = False
-                if plane.branch_pts and len(plane.branch_pts) >= 2:
+                branch_pts = getattr(plane, "branch_pts", None)
+                if branch_pts and len(branch_pts) >= 2:
                     try:
-                        pts = np.array(plane.branch_pts)
+                        pts = np.array(branch_pts)
                         p_start = pts[-1]
                         p_end = pts[0]
                         vec = p_end - p_start
