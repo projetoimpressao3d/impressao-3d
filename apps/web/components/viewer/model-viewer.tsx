@@ -837,9 +837,12 @@ export function ModelViewer({
           hasSubscription={hasSubscription}
           onShowPreview={colorGroups.length > 0 ? () => setColorPreviewMode((v) => !v) : undefined}
           colorPreviewMode={colorPreviewMode}
-          onSplitOversizedPiece={() => {
-            setToolMode("linear");
-            handleStartSplit();
+          onSplitCompleted={() => {
+            // Ao completar qualquer separação/subdivisão, ativar automaticamente
+            // a visualização 3D das peças nas mesas (usa colorGroups do 3MF original)
+            if (colorGroups.length > 0) {
+              setColorPreviewMode(true);
+            }
           }}
         />
       )}

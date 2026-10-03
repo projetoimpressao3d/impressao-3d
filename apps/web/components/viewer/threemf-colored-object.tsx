@@ -824,17 +824,31 @@ function useThreeMFParsed(url: string) {
 // Sub-componente: mesh individual por grupo de cor
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ColorMesh({ group, renderOrder }: { group: ColorGroup; renderOrder: number }) {
+function ColorMesh({
+  group,
+  renderOrder,
+  opacity = 1,
+}: {
+  group: ColorGroup;
+  renderOrder: number;
+  opacity?: number;
+}) {
   const color = useMemo(() => new THREE.Color(group.colorHex), [group.colorHex]);
 
   if (group.isBase) {
     return (
       <mesh geometry={group.geometry} renderOrder={0} castShadow receiveShadow>
-        <meshStandardMaterial color={color} roughness={0.55} metalness={0.0} side={THREE.DoubleSide} />
+        <meshStandardMaterial
+          color={color}
+          roughness={0.55}
+          metalness={0.0}
+          side={THREE.DoubleSide}
+          transparent={opacity < 1}
+          opacity={opacity}
+        />
       </mesh>
     );
   }
-
 
   return (
     <mesh geometry={group.geometry} renderOrder={renderOrder}>
@@ -843,6 +857,8 @@ function ColorMesh({ group, renderOrder }: { group: ColorGroup; renderOrder: num
         roughness={0.55}
         metalness={0.0}
         side={THREE.DoubleSide}
+        transparent={opacity < 1}
+        opacity={opacity}
       />
     </mesh>
   );
@@ -877,7 +893,7 @@ export function ThreeMFColoredObject({
   return (
     <group rotation={[-Math.PI / 2, 0, 0]}>
       {result.groups.map((g, i) => (
-        <ColorMesh key={g.extruderIndex} group={g} renderOrder={i} />
+        <ColorMesh key={g.extruderIndex} group={g} renderOrder={i} opacity={opacity} />
       ))}
     </group>
   );

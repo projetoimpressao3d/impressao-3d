@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
+import trimesh
 from pydantic import BaseModel
 from supabase import Client
 
@@ -20,6 +21,9 @@ from app.mesh.color_splitter import get_color_info, parse_3mf_colors
 from app.mesh.capper import close_color_piece
 from app.mesh.plate_packer import pack_pieces_to_plates
 from app.mesh.threemf_writer import write_plate_3mf_bytes
+from app.mesh.skeleton import suggest_structural_cuts
+from app.mesh.general_splitter import suggest_general_split
+from app.mesh.cutter import cut_mesh_by_planes, CutPlaneInput
 from app.storage import create_download_url, download_to_tempfile, upload_bytes
 
 logger = logging.getLogger(__name__)
@@ -53,6 +57,21 @@ class ColorSplitRequest(BaseModel):
     snap_to_floor: bool = True     # True = encosta Z=0; False = posicao original
 
 
+class SubdivideColorPieceRequest(BaseModel):
+    user_id: str
+    build_plate_id: str
+    extruder_number: int
+    mode: str = "character"         # "character" ou "general"
+    character_template: str = "creature"
+    general_granularity: str = "auto"
+    structural_sensitivity: float = 0.05
+    generate_connectors: bool = True
+    connector_pin_shape: str = "hex"
+    connector_tolerance_mm: float = 0.2
+    snap_to_floor: bool = True
+    cap_method: str = "earcut"
+
+
 class PlateOutput(BaseModel):
     plate_number: int
     extruder_number: int
@@ -61,6 +80,8 @@ class PlateOutput(BaseModel):
     download_url: str
     fits_in_plate: bool
     extents_mm: list[float]
+    label: str | None = None
+    is_subdivided: bool = False
 
 
 class ColorSplitResponse(BaseModel):
@@ -68,6 +89,8 @@ class ColorSplitResponse(BaseModel):
     plates: list[PlateOutput]
     total_pieces: int
     oversized_count: int
+    unified_download_url: str | None = None
+    unified_file_name: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +280,24 @@ async def split_model_by_color(
                     download_url=dl_url,
                     fits_in_plate=fits,
                     extents_mm=extents,
+                    label=f"Extruder {ext_num}",
+                    is_subdivided=False,
                 ))
+
+        # Gerar também o arquivo .3MF unificado com todas as cores
+        all_meshes = [p.mesh for p in split_result.pieces]
+        all_colors = [p.filament.color_hex for p in split_result.pieces]
+        unified_3mf_bytes = write_plate_3mf_bytes(
+            meshes=all_meshes,
+            colors=all_colors,
+            model_name=f"{split_result.model_name}_completo",
+            snap_to_floor=payload.snap_to_floor,
+        )
+        safe_model_name = split_result.model_name.replace(" ", "_")
+        unified_fname = f"{safe_model_name}_completo_todas_cores.3mf"
+        unified_path = f"pieces/{payload.user_id}/{model_id}/{unified_fname}"
+        upload_bytes(supabase, unified_path, unified_3mf_bytes, content_type="model/3mf")
+        unified_url = create_download_url(supabase, unified_path, expires_in=3600)
 
     finally:
         Path(tmp_path).unlink(missing_ok=True)
@@ -273,4 +313,198 @@ async def split_model_by_color(
         plates=plates_output,
         total_pieces=len(split_result.pieces),
         oversized_count=len(pack_result.oversized_pieces),
+        unified_download_url=unified_url,
+        unified_file_name=unified_fname,
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /color-split/{model_id}/subdivide-piece
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{model_id}/subdivide-piece",
+    response_model=ColorSplitResponse,
+    summary="Subdividir peça oversized preservando todas as cores em 3MF unificado",
+)
+async def subdivide_color_piece(
+    model_id: str,
+    payload: SubdivideColorPieceRequest,
+    supabase: Client = Depends(get_supabase_client),
+    _auth: None = Depends(verify_internal_token),
+) -> ColorSplitResponse:
+    """
+    Subdivide uma cor específica que excedeu a mesa (via Character Split ou General Split),
+    gera conectores mecânicos e cria tanto o 3MF unificado com todas as cores
+    quanto os arquivos individuais para download de cada peça.
+    """
+    model = _fetch_model(supabase, model_id, payload.user_id)
+    if not model:
+        raise HTTPException(status_code=404, detail="Modelo não encontrado.")
+
+    plate = _fetch_build_plate(supabase, payload.build_plate_id, payload.user_id)
+    if not plate:
+        raise HTTPException(status_code=404, detail="Mesa de trabalho não encontrada.")
+
+    plate_x = float(plate["build_volume_x_mm"])
+    plate_y = float(plate["build_volume_y_mm"])
+    plate_z = float(plate["build_volume_z_mm"])
+
+    # 1. Download do 3MF original
+    url = create_download_url(supabase, model["storage_path"])
+    tmp_path = await download_to_tempfile(url, model["storage_path"])
+
+    try:
+        # 2. Separar por cor
+        split_result = parse_3mf_colors(tmp_path)
+        if not split_result.pieces:
+            raise HTTPException(status_code=422, detail="Nenhuma cor detectada no modelo.")
+
+        # 3. Fechar buracos de todas as peças
+        for p in split_result.pieces:
+            p.mesh = close_color_piece(p.mesh, method=payload.cap_method)
+            p.is_watertight = p.mesh.is_watertight
+
+        # 4. Localizar a peça alvo do corte (pelo extruder_number)
+        target_piece = None
+        for p in split_result.pieces:
+            if p.extruder_index == payload.extruder_number - 1:
+                target_piece = p
+                break
+
+        if not target_piece:
+            target_piece = max(split_result.pieces, key=lambda p: len(p.mesh.faces))
+
+        # 5. Calcular planos de corte na peça alvo
+        if payload.mode == "character":
+            cut_planes_raw = suggest_structural_cuts(
+                target_piece.mesh,
+                sensitivity=payload.structural_sensitivity,
+                template=payload.character_template,
+            )
+        else:
+            cut_planes_raw = suggest_general_split(
+                target_piece.mesh,
+                plate_x,
+                plate_y,
+                plate_z,
+                granularity=payload.general_granularity,
+            )
+
+        cut_inputs = [
+            CutPlaneInput(
+                normal=cp["normal"],
+                origin=cp["origin"],
+                label=cp.get("label", ""),
+                bbox_min=cp.get("bbox_min"),
+                bbox_max=cp.get("bbox_max"),
+            )
+            for cp in cut_planes_raw
+        ]
+
+        # 6. Executar cortes com conectores mecânicos na peça
+        sub_meshes = cut_mesh_by_planes(
+            target_piece.mesh,
+            cut_inputs,
+            generate_connectors=payload.generate_connectors,
+            connector_tolerance_mm=payload.connector_tolerance_mm,
+            connector_pin_shape=payload.connector_pin_shape,
+        )
+
+        # 7. Reunir TODAS as peças (sub-peças da cor cortada + outras cores intactas)
+        all_pieces_meshes: list[tuple[trimesh.Trimesh, str, int, str, bool]] = []
+
+        # Sub-peças da cor cortada
+        for i, sm in enumerate(sub_meshes):
+            lbl = cut_planes_raw[i].get("label", f"Parte_{i+1}") if i < len(cut_planes_raw) else f"Parte_{i+1}"
+            all_pieces_meshes.append((
+                sm,
+                target_piece.filament.color_hex,
+                target_piece.extruder_index + 1,
+                f"Extruder {target_piece.extruder_index + 1} - {lbl}",
+                True,
+            ))
+
+        # Outras cores
+        for p in split_result.pieces:
+            if p is not target_piece:
+                all_pieces_meshes.append((
+                    p.mesh,
+                    p.filament.color_hex,
+                    p.extruder_index + 1,
+                    f"Extruder {p.extruder_index + 1}",
+                    False,
+                ))
+
+        # 8. Gerar arquivo .3MF UNIFICADO com TODAS as peças e TODAS as cores
+        unified_3mf_bytes = write_plate_3mf_bytes(
+            meshes=[m for m, _, _, _, _ in all_pieces_meshes],
+            colors=[c for _, c, _, _, _ in all_pieces_meshes],
+            model_name=f"{split_result.model_name}_completo",
+            snap_to_floor=payload.snap_to_floor,
+        )
+        safe_model_name = split_result.model_name.replace(" ", "_")
+        unified_fname = f"{safe_model_name}_completo_todas_cores.3mf"
+        unified_storage_path = f"pieces/{payload.user_id}/{model_id}/{unified_fname}"
+        upload_bytes(supabase, unified_storage_path, unified_3mf_bytes, content_type="model/3mf")
+        unified_url = create_download_url(supabase, unified_storage_path, expires_in=3600)
+
+        # 9. Gerar arquivos individuais por peça e verificar se cabem na mesa
+        plates_output: list[PlateOutput] = []
+        oversized_count = 0
+
+        for idx, (mesh_obj, color_hex, ext_num, label, is_sub) in enumerate(all_pieces_meshes):
+            extents = [round(float(e), 1) for e in mesh_obj.extents]
+            fits = (
+                extents[0] <= plate_x
+                and extents[1] <= plate_y
+                and extents[2] <= plate_z
+            )
+            if not fits:
+                oversized_count += 1
+
+            # Upload individual .3mf
+            indiv_bytes = write_plate_3mf_bytes(
+                meshes=[mesh_obj],
+                colors=[color_hex],
+                model_name=f"{safe_model_name}_p{idx+1}",
+                snap_to_floor=payload.snap_to_floor,
+            )
+            safe_color = color_hex.replace("#", "")
+            safe_label = label.replace(" ", "_").replace("/", "_")
+            fname = f"{model_id}_{safe_label}_{safe_color}.3mf"
+            indiv_path = f"pieces/{payload.user_id}/{model_id}/{fname}"
+            upload_bytes(supabase, indiv_path, indiv_bytes, content_type="model/3mf")
+            indiv_url = create_download_url(supabase, indiv_path, expires_in=3600)
+
+            plates_output.append(PlateOutput(
+                plate_number=idx + 1,
+                extruder_number=ext_num,
+                color_hex=color_hex,
+                storage_path=indiv_path,
+                download_url=indiv_url,
+                fits_in_plate=fits,
+                extents_mm=extents,
+                label=label,
+                is_subdivided=is_sub,
+            ))
+
+        logger.info(
+            "Subdivisão concluída para modelo %s: %d peças geradas, %d oversized",
+            model_id,
+            len(plates_output),
+            oversized_count,
+        )
+
+        return ColorSplitResponse(
+            model_id=model_id,
+            plates=plates_output,
+            total_pieces=len(plates_output),
+            oversized_count=oversized_count,
+            unified_download_url=unified_url,
+            unified_file_name=unified_fname,
+        )
+
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
