@@ -60,6 +60,21 @@ function fmm(v: number) {
   return v.toFixed(1);
 }
 
+/** Extrai mensagem de erro de uma resposta HTTP de forma segura (JSON ou texto puro). */
+async function safeErrorMessage(res: Response): Promise<string> {
+  try {
+    const ct = res.headers.get("content-type") ?? "";
+    if (ct.includes("application/json")) {
+      const j = (await res.json()) as { detail?: string; error?: string; message?: string };
+      return j.detail ?? j.error ?? j.message ?? `HTTP ${res.status}`;
+    }
+    const text = await res.text();
+    return text.trim() || `HTTP ${res.status}`;
+  } catch {
+    return `HTTP ${res.status}`;
+  }
+}
+
 type SubdivideMode = "character" | "general";
 
 interface SubdivideConfig {
@@ -126,14 +141,13 @@ export function ColorSplitPanel({
     try {
       const res = await fetch(`/api/color-split/${modelId}/info`);
       if (!res.ok) {
-        const err = (await res.json()) as { detail?: string };
         if (res.status === 503) {
           throw new Error(
             "O serviço de processamento não está disponível no momento. " +
             "O backend Python precisa ser configurado para usar esta funcionalidade.",
           );
         }
-        throw new Error(err.detail ?? `Erro HTTP ${res.status}`);
+        throw new Error(await safeErrorMessage(res));
       }
       const data = (await res.json()) as {
         is_painted: boolean;
@@ -148,6 +162,7 @@ export function ColorSplitPanel({
     }
   };
 
+
   // ── Etapa 2: Separar peças por cor ──────────────────────────────────────
   const handleSplitByColor = async () => {
     if (!selectedPlateId) return;
@@ -161,19 +176,20 @@ export function ColorSplitPanel({
         body: JSON.stringify({ build_plate_id: selectedPlateId, snap_to_floor: snapToFloor }),
       });
       if (!res.ok) {
-        const err = (await res.json()) as { detail?: string };
-        throw new Error(err.detail ?? `HTTP ${res.status}`);
+        const msg = await safeErrorMessage(res);
+        throw new Error(msg);
       }
       const data = (await res.json()) as ColorSplitResult;
       setSplitResult(data);
       setDone(true);
       onSplitCompleted?.(data);
     } catch (err) {
-      setError(String(err));
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSplitting(false);
     }
   };
+
 
   // ── Etapa 3: Subdividir peça oversized (inline) ──────────────────────────
   const handleSubdividePiece = async () => {
@@ -200,8 +216,8 @@ export function ColorSplitPanel({
       });
 
       if (!res.ok) {
-        const err = (await res.json()) as { detail?: string };
-        throw new Error(err.detail ?? `HTTP ${res.status}`);
+        const msg = await safeErrorMessage(res);
+        throw new Error(msg);
       }
 
       const data = (await res.json()) as ColorSplitResult;
@@ -209,13 +225,14 @@ export function ColorSplitPanel({
       setSubdividingPlate(null);
       onSplitCompleted?.(data);
     } catch (err) {
-      setError(String(err));
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsSubdividing(false);
     }
   };
 
   // ── Guard: apenas .3mf ──────────────────────────────────────────────────
+
   if (!is3mf) {
     return (
       <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">

@@ -39,9 +39,26 @@ export async function POST(
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ ...body, user_id: user.id }),
     });
-    const data = await upstream.json();
-    return NextResponse.json(data, { status: upstream.status });
+
+    // Lê o body de forma segura — pode ser JSON ou texto puro em caso de erro
+    const contentType = upstream.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      const data = await upstream.json();
+      return NextResponse.json(data, { status: upstream.status });
+    } else {
+      const text = await upstream.text();
+      return NextResponse.json(
+        { detail: text || `Erro HTTP ${upstream.status} do serviço de análise` },
+        { status: upstream.status },
+      );
+    }
   } catch (err) {
-    return NextResponse.json({ detail: String(err) }, { status: 503 });
+    const msg = err instanceof Error ? err.message : String(err);
+    return NextResponse.json(
+      {
+        detail: `Não foi possível conectar ao serviço de análise de malha. Verifique se o backend Python está rodando.\n\nDetalhes: ${msg}`,
+      },
+      { status: 503 },
+    );
   }
 }
