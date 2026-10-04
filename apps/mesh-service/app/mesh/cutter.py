@@ -23,9 +23,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import trimesh
-
-if TYPE_CHECKING:
-    from manifold3d import Manifold
+from manifold3d import Manifold, Mesh
 
 from app.mesh.connectors import add_interlock_connector
 
@@ -85,6 +83,65 @@ def _clean_piece_shards(piece: trimesh.Trimesh, min_volume: float = 150.0) -> tr
         return piece
 
 
+def _cut_mesh_by_planes_trimesh(
+    mesh: trimesh.Trimesh,
+    planes: list[CutPlaneInput],
+    generate_connectors: bool = True,
+    connector_tolerance_mm: float = 0.2,
+    connector_pin_shape: str = "hex",
+) -> list[trimesh.Trimesh]:
+    """
+    Fatiador planar robusto baseado em trimesh com capping poligonal estanque.
+    Utilizado como fallback transparente quando o modelo de entrada contém
+    arestas não-manifold que impossibilitam a conversão para manifold3d.
+    """
+    current = mesh.copy()
+    accumulated: list[trimesh.Trimesh] = []
+
+    for i, plane in enumerate(planes):
+        n = np.asarray(plane.normal, dtype=np.float64)
+        norm_val = float(np.linalg.norm(n))
+        if norm_val < 1e-10:
+            continue
+        n = n / norm_val
+        o = np.asarray(plane.origin, dtype=np.float64)
+
+        try:
+            top = trimesh.intersections.slice_mesh_plane(current, plane_normal=n, plane_origin=o, cap=True)
+            bottom = trimesh.intersections.slice_mesh_plane(current, plane_normal=-n, plane_origin=o, cap=True)
+
+            if len(top.vertices) > 0 and len(bottom.vertices) > 0:
+                if generate_connectors:
+                    try:
+                        m_top = _trimesh_to_manifold(top)
+                        m_bottom = _trimesh_to_manifold(bottom)
+                        if m_top.num_vert() > 0 and m_bottom.num_vert() > 0 and m_top.status() == 0 and m_bottom.status() == 0:
+                            m_top, m_bottom = add_interlock_connector(
+                                m_top,
+                                m_bottom,
+                                reference_mesh=current,
+                                plane_origin=plane.origin,
+                                plane_normal=n,
+                                tolerance_mm=connector_tolerance_mm,
+                                pin_shape=connector_pin_shape,
+                            )
+                            top = _manifold_to_trimesh(m_top)
+                            bottom = _manifold_to_trimesh(m_bottom)
+                    except Exception as conn_err:
+                        logger.warning("Falha ao gerar conector para o plano %d (%s): %s", i + 1, plane.label, conn_err)
+
+                accumulated.append(top)
+                current = bottom
+            else:
+                logger.warning("Plano %d (%s) não seccionou a geometria em 2 partes válidas", i + 1, plane.label)
+        except Exception as exc:
+            logger.warning("Erro ao fatiar com trimesh no plano %d (%s): %s", i + 1, plane.label, exc)
+
+    accumulated.append(current)
+    valid_pieces = [p for p in accumulated if len(p.vertices) > 0 and len(p.faces) > 0]
+    return valid_pieces if valid_pieces else [mesh]
+
+
 def cut_mesh_by_planes(
     mesh: trimesh.Trimesh,
     planes: list[CutPlaneInput],
@@ -93,36 +150,25 @@ def cut_mesh_by_planes(
     connector_pin_shape: str = "hex",
 ) -> list[trimesh.Trimesh]:
     """
-    Aplica N planos de corte sequencialmente usando manifold3d.
-
-    Para planos estruturais com caixa delimitadora (bbox_min/bbox_max), executa
-    o Corte Local Delimitado (Bounded Volume Cut), extraindo apenas o apendice local
-    sem tocar em partes distantes da geometria.
-
-    O capping de cada face aberta é feito AUTOMATICAMENTE pelo manifold3d —
-    não é necessária nenhuma etapa adicional de fechamento.
-
-    Args:
-        mesh:   Malha de entrada. Recomenda-se aplicar repair_mesh() antes.
-        planes: Planos de corte na ordem de aplicação. Cada plano divide
-                o fragmento "bottom" do plano anterior.
-
-    Returns:
-        Lista com N+1 trimesh.Trimesh. Todas as peças são watertight.
-        Peças vazias (sem vértices) são descartadas silenciosamente.
-
-    Raises:
-        ValueError:   Malha inválida ou normal com norma ≈ 0.
-        RuntimeError: Erro interno do manifold3d durante o corte.
+    Aplica N planos de corte sequencialmente usando manifold3d (com fallback robusto trimesh).
     """
     if not planes:
         return [mesh]
 
-    # Converter malha inicial para manifold3d
+    # Converter malha inicial para manifold3d e verificar validade
+    current: Manifold | None = None
     try:
-        current: Manifold = _trimesh_to_manifold(mesh)
-    except Exception as exc:
-        raise ValueError(f"Falha ao converter malha para manifold3d: {exc}") from exc
+        current = _trimesh_to_manifold(mesh)
+        if current.num_vert() == 0 or current.status() != 0:
+            current = None
+    except Exception:
+        current = None
+
+    if current is None:
+        logger.info("Malha de entrada possui micro-arestas abertas; utilizando fatiador robusto trimesh")
+        return _cut_mesh_by_planes_trimesh(
+            mesh, planes, generate_connectors, connector_tolerance_mm, connector_pin_shape
+        )
 
     accumulated: list[Manifold] = []
 
@@ -212,14 +258,17 @@ def cut_mesh_by_planes(
                 top_inside, bottom_inside = inside_box.split_by_plane(n.tolist(), origin_offset)
                 
                 # Isolar apenas o apêndice alvo, devolvendo "bystanders" (ex: Dragonair) para o corpo
-                top_pieces = top_inside.decompose()
+                top_pieces = [p for p in top_inside.decompose() if not p.is_empty()]
                 if top_pieces:
                     # Encontrar a peça cujo centroid está mais próximo do origin do plano
                     origin_pt = np.asarray(plane.origin)
                     best_piece = top_pieces[0]
                     min_dist = float('inf')
                     for p in top_pieces:
-                        dist = float(np.linalg.norm(_manifold_to_trimesh(p).bounding_box.centroid - origin_pt))
+                        tm = _manifold_to_trimesh(p)
+                        if len(tm.vertices) < 3 or tm.bounds is None:
+                            continue
+                        dist = float(np.linalg.norm(tm.bounds.mean(axis=0) - origin_pt))
                         if dist < min_dist:
                             min_dist = dist
                             best_piece = p
@@ -286,6 +335,12 @@ def cut_mesh_by_planes(
             len(piece.faces),
             piece.is_watertight,
             *piece.extents,
+        )
+
+    if not result:
+        logger.warning("manifold3d resultou em peças vazias; recorrendo ao fatiador robusto trimesh")
+        return _cut_mesh_by_planes_trimesh(
+            mesh, planes, generate_connectors, connector_tolerance_mm, connector_pin_shape
         )
 
     return result

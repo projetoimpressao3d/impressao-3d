@@ -17,6 +17,7 @@ import { ViewerOverlay } from "./viewer-overlay";
 import { SplitPanel } from "@/components/split/split-panel";
 import { PieceDownload } from "@/components/split/piece-download";
 import { ColorSplitPanel } from "@/components/split/color-split-panel";
+import { useThreeMFParsed, type ColorGroup } from "./threemf-colored-object";
 
 // Dynamic import com ssr: false — Three.js NÃO pode rodar no servidor
 const ViewerScene = dynamic(
@@ -234,8 +235,20 @@ export function ModelViewer({
   const [executedPieces, setExecutedPieces] = useState<ExecutedPiece[]>([]);
 
   // ── Grupos de cor parsados do 3MF (para preview 3D das peças) ─────────
-  const [colorGroups, setColorGroups] = useState<import("@/components/viewer/threemf-colored-object").ColorGroup[]>([]);
+  const [colorGroups, setColorGroups] = useState<ColorGroup[]>([]);
   const [colorPreviewMode, setColorPreviewMode] = useState(false);
+  const [active3DUrl, setActive3DUrl] = useState<string | null>(null);
+
+  const current3DUrl = active3DUrl ?? signedUrl;
+  const { result: parsedThreeMF } = useThreeMFParsed(
+    model.format === "3mf" && current3DUrl ? current3DUrl : ""
+  );
+
+  useEffect(() => {
+    if (parsedThreeMF?.groups && parsedThreeMF.groups.length > 0) {
+      setColorGroups(parsedThreeMF.groups);
+    }
+  }, [parsedThreeMF]);
 
   // ── Modo de ferramenta para arquivos 3MF ─────────────────────────────
   // "colors": separação por cor (ColorSplitPanel)
@@ -751,9 +764,9 @@ export function ModelViewer({
 
         {/* Canvas 3D */}
         <div style={{ height: 520 }}>
-          {signedUrl ? (
+          {current3DUrl ? (
             <ViewerScene
-              url={signedUrl}
+              url={current3DUrl}
               format={model.format as "stl" | "3mf"}
               selectedPlate={selectedPlate}
               onBboxChange={handleBboxChange}
@@ -837,14 +850,18 @@ export function ModelViewer({
           hasSubscription={hasSubscription}
           onShowPreview={colorGroups.length > 0 ? () => setColorPreviewMode((v) => !v) : undefined}
           colorPreviewMode={colorPreviewMode}
-          onSplitCompleted={() => {
-            // Ao completar qualquer separação/subdivisão, ativar automaticamente
-            // a visualização 3D das peças nas mesas (usa colorGroups do 3MF original)
-            if (colorGroups.length > 0) {
-              setColorPreviewMode(true);
+          onSplitCompleted={(result) => {
+            if (result.unified_download_url) {
+              setActive3DUrl(result.unified_download_url);
             }
+            setColorPreviewMode(true);
+          }}
+          onReset={() => {
+            setActive3DUrl(null);
+            setColorPreviewMode(false);
           }}
         />
+
       )}
 
       {/* ── Painel de corte linear (idle para 3MF com toolMode=linear, ou STL) ── */}

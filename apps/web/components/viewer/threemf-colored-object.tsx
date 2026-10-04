@@ -725,6 +725,110 @@ function parseMultiObject(
   return { groups, bbox, centeredPositionsYUp: centeredYUp, method: "multi_object" };
 }
 
+function parseStandardMultiObject(objXml: string): ParseResult | null {
+  const baseMaterialsRe = /<base\s+[^>]*displaycolor="#([0-9A-Fa-f]{6})[0-9A-Fa-f]{0,2}"/g;
+  const baseColors: string[] = [];
+  for (const m of objXml.matchAll(baseMaterialsRe)) {
+    baseColors.push("#" + m[1].toUpperCase());
+  }
+
+  const objRe = /<object\s+([^>]*?)>([\s\S]*?)<\/object>/g;
+  const objects: Array<{ id: string; pindex: number; block: string }> = [];
+  for (const m of objXml.matchAll(objRe)) {
+    const attrs = m[1];
+    const block = m[2];
+    const idMatch = attrs.match(/id="(\d+)"/);
+    const pindexMatch = attrs.match(/pindex="(\d+)"/);
+    const id = idMatch ? idMatch[1] : "0";
+    const pindex = pindexMatch ? parseInt(pindexMatch[1]) : 0;
+    objects.push({ id, pindex, block });
+  }
+
+  if (objects.length === 0) return null;
+
+  interface ObjectPart {
+    pindex: number;
+    colorHex: string;
+    geo: THREE.BufferGeometry;
+    positions: Float32Array;
+  }
+
+  const parts: ObjectPart[] = [];
+  let mnX = Infinity, mnY = Infinity, mnZ = Infinity;
+  let mxX = -Infinity, mxY = -Infinity, mxZ = -Infinity;
+
+  for (const obj of objects) {
+    const pos = parseObjectBlock(obj.block, null);
+    if (pos.length === 0) continue;
+    const colorHex = obj.pindex < baseColors.length ? baseColors[obj.pindex] : "#888888";
+    const geo = buildGeoFromPositions(pos);
+    parts.push({ pindex: obj.pindex, colorHex, geo, positions: pos });
+
+    for (let i = 0; i < pos.length; i += 3) {
+      const x = pos[i], y = pos[i + 1], z = pos[i + 2];
+      if (x < mnX) mnX = x; if (x > mxX) mxX = x;
+      if (y < mnY) mnY = y; if (y > mxY) mxY = y;
+      if (z < mnZ) mnZ = z; if (z > mxZ) mxZ = z;
+    }
+  }
+
+  if (parts.length === 0) return null;
+
+  const cx = (mnX + mxX) / 2;
+  const cy = (mnY + mxY) / 2;
+  const cz = (mnZ + mxZ) / 2;
+
+  const groupsByPindex = new Map<number, ObjectPart[]>();
+  for (const p of parts) {
+    if (!groupsByPindex.has(p.pindex)) groupsByPindex.set(p.pindex, []);
+    groupsByPindex.get(p.pindex)!.push(p);
+  }
+
+  const groups: ColorGroup[] = [];
+  const sortedPindices = Array.from(groupsByPindex.keys()).sort((a, b) => a - b);
+
+  for (const pindex of sortedPindices) {
+    const pParts = groupsByPindex.get(pindex)!;
+    const colorHex = pParts[0].colorHex;
+    const partGeos = pParts.map((pp) => pp.geo);
+
+    let totalLen = 0;
+    for (const pp of pParts) totalLen += pp.positions.length;
+    const mergedPos = new Float32Array(totalLen);
+    let offset = 0;
+    for (const pp of pParts) {
+      mergedPos.set(pp.positions, offset);
+      offset += pp.positions.length;
+    }
+
+    groups.push({
+      extruderIndex: pindex,
+      colorHex,
+      label: `Extruder ${pindex + 1}`,
+      geometry: buildGeoFromPositions(mergedPos),
+      parts: partGeos,
+      isBase: pindex === 0,
+    });
+  }
+
+  const baseGroup = groups.find((g) => g.isBase) ?? groups[0];
+  const basePosAttr = baseGroup?.geometry.getAttribute("position");
+  const n = basePosAttr?.count ?? 0;
+  const centeredYUp = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    centeredYUp[i * 3] = basePosAttr!.getX(i) - cx;
+    centeredYUp[i * 3 + 1] = -(basePosAttr!.getZ(i) - cz);
+    centeredYUp[i * 3 + 2] = basePosAttr!.getY(i) - cy;
+  }
+
+  const bbox = new THREE.Box3(
+    new THREE.Vector3(mnX - cx, -(mxZ - cz), mnY - cy),
+    new THREE.Vector3(mxX - cx, -(mnZ - cz), mxY - cy),
+  );
+
+  return { groups, bbox, centeredPositionsYUp: centeredYUp, method: "multi_object" };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Detecção automática de formato
 // ─────────────────────────────────────────────────────────────────────────────
@@ -732,13 +836,15 @@ function parseMultiObject(
 function detectMethod(
   objXml: string,
   modelSettingsXml: string | null,
-): "painted" | "multi_object" {
+): "painted" | "multi_object" | "standard_multi" {
+  if (/<basematerials\b/.test(objXml)) {
+    return "standard_multi";
+  }
   // Se model_settings tem <part> com extruder
   if (modelSettingsXml) {
     const hasParts    = /<part id="/.test(modelSettingsXml);
     const hasExtruder = /key="extruder"/.test(modelSettingsXml);
     if (hasParts && hasExtruder) {
-      // Verificar paint_color no conteúdo inteiro — os primeiros 50KB são só vértices
       const hasPaintColor = /paint_color="[0-9A-Fa-f]+"/.test(objXml);
       if (!hasPaintColor) return "multi_object";
     }
@@ -750,13 +856,17 @@ function detectMethod(
 // Hook de carregamento e parsing
 // ─────────────────────────────────────────────────────────────────────────────
 
-function useThreeMFParsed(url: string) {
+export function useThreeMFParsed(url: string) {
   const [result, setResult] = useState<ParseResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    if (!url) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     setResult(null);
@@ -792,7 +902,10 @@ function useThreeMFParsed(url: string) {
         console.log("[3MF] Método:", method, "| Extrusor padrão:", defaultExtruder, "| Filamentos:", filamentColors);
 
         let parsed: ParseResult;
-        if (method === "multi_object" && modelSettingsXml) {
+        if (method === "standard_multi") {
+          const std = parseStandardMultiObject(objXml);
+          parsed = std ?? parsePainted(objXml, filamentColors, defaultExtruder);
+        } else if (method === "multi_object" && modelSettingsXml) {
           parsed = parseMultiObject(objXml, rootXml, modelSettingsXml, filamentColors);
         } else {
           parsed = parsePainted(objXml, filamentColors, defaultExtruder);
@@ -819,6 +932,7 @@ function useThreeMFParsed(url: string) {
 
   return { result, loading, error };
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Sub-componente: mesh individual por grupo de cor
@@ -877,15 +991,16 @@ export function ThreeMFColoredObject({
   opacity = 1,
 }: ThreeMFColoredObjectProps) {
   const { result, loading, error } = useThreeMFParsed(url);
-  const reportedRef = useRef(false);
+  const lastUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!result || reportedRef.current) return;
-    reportedRef.current = true;
+    if (!result) return;
+    if (lastUrlRef.current === url) return;
+    lastUrlRef.current = url;
     onBboxChange(result.bbox);
     onGeometryReady?.(result.centeredPositionsYUp);
     onGroupsParsed?.(result.groups);
-  }, [result, onBboxChange, onGeometryReady, onGroupsParsed]);
+  }, [result, url, onBboxChange, onGeometryReady, onGroupsParsed]);
 
   if (loading || !result) return null;
   if (error) { console.error("ThreeMFColoredObject:", error); return null; }

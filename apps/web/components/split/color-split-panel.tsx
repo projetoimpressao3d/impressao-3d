@@ -44,6 +44,7 @@ interface ColorSplitPanelProps {
   onSplitOversizedPiece?: (plate: PlateOutput) => void;
   // After any split/subdivide completes, propagate to the viewer for 3D preview
   onSplitCompleted?: (result: ColorSplitResult) => void;
+  onReset?: () => void;
 }
 
 
@@ -98,6 +99,7 @@ export function ColorSplitPanel({
   colorPreviewMode = false,
   onSplitOversizedPiece,
   onSplitCompleted,
+  onReset,
 }: ColorSplitPanelProps) {
 
   const [colorInfo, setColorInfo] = useState<{
@@ -679,6 +681,7 @@ export function ColorSplitPanel({
               setSplitResult(null);
               setSubdividingPlate(null);
               setError(null);
+              onReset?.();
             }}
           >
             Nova separacao

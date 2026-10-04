@@ -434,6 +434,9 @@ async def subdivide_color_piece(
             connector_tolerance_mm=payload.connector_tolerance_mm,
             connector_pin_shape=payload.connector_pin_shape,
         )
+        if not sub_meshes:
+            logger.warning("Corte resultou em 0 peças; mantendo peça original da cor")
+            sub_meshes = [target_piece.mesh]
 
         # 7. Reunir TODAS as peças (sub-peças da cor cortada + outras cores intactas)
         all_pieces_meshes: list[tuple[trimesh.Trimesh, str, int, str, bool]] = []
