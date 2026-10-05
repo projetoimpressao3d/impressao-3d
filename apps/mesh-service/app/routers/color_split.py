@@ -24,7 +24,7 @@ from app.mesh.threemf_writer import write_plate_3mf_bytes
 from app.mesh.skeleton import suggest_structural_cuts
 from app.mesh.general_splitter import suggest_general_split
 from app.mesh.cutter import cut_mesh_by_planes, CutPlaneInput
-from app.storage import create_download_url, download_to_tempfile, upload_bytes
+from app.storage import create_download_url, download_to_tempfile, upload_bytes, sanitize_storage_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/color-split", tags=["color-split"])
@@ -293,7 +293,7 @@ async def split_model_by_color(
             model_name=f"{split_result.model_name}_completo",
             snap_to_floor=payload.snap_to_floor,
         )
-        safe_model_name = split_result.model_name.replace(" ", "_")
+        safe_model_name = sanitize_storage_key(split_result.model_name)
         unified_fname = f"{safe_model_name}_completo_todas_cores.3mf"
         unified_path = f"pieces/{payload.user_id}/{model_id}/{unified_fname}"
         upload_bytes(supabase, unified_path, unified_3mf_bytes, content_type="model/3mf")
@@ -470,7 +470,7 @@ async def subdivide_color_piece(
             model_name=f"{split_result.model_name}_completo",
             snap_to_floor=payload.snap_to_floor,
         )
-        safe_model_name = split_result.model_name.replace(" ", "_")
+        safe_model_name = sanitize_storage_key(split_result.model_name)
         unified_fname = f"{safe_model_name}_completo_todas_cores.3mf"
         unified_storage_path = f"pieces/{payload.user_id}/{model_id}/{unified_fname}"
         upload_bytes(supabase, unified_storage_path, unified_3mf_bytes, content_type="model/3mf")
@@ -498,7 +498,7 @@ async def subdivide_color_piece(
                 snap_to_floor=payload.snap_to_floor,
             )
             safe_color = color_hex.replace("#", "")
-            safe_label = label.replace(" ", "_").replace("/", "_")
+            safe_label = sanitize_storage_key(label)
             fname = f"{model_id}_{safe_label}_{safe_color}.3mf"
             indiv_path = f"pieces/{payload.user_id}/{model_id}/{fname}"
             upload_bytes(supabase, indiv_path, indiv_bytes, content_type="model/3mf")

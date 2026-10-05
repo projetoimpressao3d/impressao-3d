@@ -5,7 +5,9 @@ Funções compartilhadas entre os routers de análise e execução de corte.
 """
 
 import logging
+import re
 import tempfile
+import unicodedata
 from pathlib import Path
 
 import httpx
@@ -14,10 +16,26 @@ from supabase import Client
 logger = logging.getLogger(__name__)
 
 
+def sanitize_storage_key(path: str) -> str:
+    """
+    Garante que o caminho/chave para o Supabase Storage seja estritamente compatível
+    com S3 (apenas caracteres ASCII seguros: a-z, A-Z, 0-9, _, -, ., /).
+    Remove acentos (ç -> c, ã -> a, etc.) e caracteres proibidos.
+    """
+    normalized = unicodedata.normalize("NFKD", str(path))
+    ascii_clean = normalized.encode("ascii", "ignore").decode("ascii")
+    ascii_clean = ascii_clean.replace(" ", "_")
+    safe = re.sub(r"[^a-zA-Z0-9_\-./]", "", ascii_clean)
+    safe = re.sub(r"/{2,}", "/", safe)
+    safe = re.sub(r"_{2,}", "_", safe)
+    return safe
+
+
 def create_download_url(supabase: Client, storage_path: str, expires_in: int = 300) -> str:
     """Gera URL assinada de download do Supabase Storage (bucket 'models')."""
+    clean_path = sanitize_storage_key(storage_path)
     response = supabase.storage.from_("models").create_signed_url(
-        path=storage_path,
+        path=clean_path,
         expires_in=expires_in,
     )
     # supabase-py 2.x retorna dict com 'signedURL'
@@ -64,13 +82,14 @@ def upload_bytes(
     supabase-py v2: storage.upload() aceita bytes diretamente, mas NÃO BytesIO.
     Usa upsert=True para sobrescrever se já existir (re-execução de sessão).
     """
+    clean_path = sanitize_storage_key(storage_path)
     supabase.storage.from_("models").upload(
-        path=storage_path,
+        path=clean_path,
         file=data,  # bytes puro — BytesIO NÃO é suportado no supabase-py v2
         file_options={
             "content-type": content_type,
             "upsert": "true",  # header HTTP deve ser string, não bool
         },
     )
-    logger.info("Upload concluído: %s (%d bytes)", storage_path, len(data))
+    logger.info("Upload concluído: %s (%d bytes)", clean_path, len(data))
 
