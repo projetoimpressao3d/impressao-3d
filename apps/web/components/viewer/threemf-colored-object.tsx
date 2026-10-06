@@ -778,36 +778,16 @@ function parseStandardMultiObject(objXml: string): ParseResult | null {
   const cy = (mnY + mxY) / 2;
   const cz = (mnZ + mxZ) / 2;
 
-  const groupsByPindex = new Map<number, ObjectPart[]>();
-  for (const p of parts) {
-    if (!groupsByPindex.has(p.pindex)) groupsByPindex.set(p.pindex, []);
-    groupsByPindex.get(p.pindex)!.push(p);
-  }
-
   const groups: ColorGroup[] = [];
-  const sortedPindices = Array.from(groupsByPindex.keys()).sort((a, b) => a - b);
-
-  for (const pindex of sortedPindices) {
-    const pParts = groupsByPindex.get(pindex)!;
-    const colorHex = pParts[0].colorHex;
-    const partGeos = pParts.map((pp) => pp.geo);
-
-    let totalLen = 0;
-    for (const pp of pParts) totalLen += pp.positions.length;
-    const mergedPos = new Float32Array(totalLen);
-    let offset = 0;
-    for (const pp of pParts) {
-      mergedPos.set(pp.positions, offset);
-      offset += pp.positions.length;
-    }
-
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
     groups.push({
-      extruderIndex: pindex,
-      colorHex,
-      label: `Extruder ${pindex + 1}`,
-      geometry: buildGeoFromPositions(mergedPos),
-      parts: partGeos,
-      isBase: pindex === 0,
+      extruderIndex: p.pindex,
+      colorHex: p.colorHex,
+      label: `Mesa ${i + 1} (Extruder ${p.pindex + 1})`,
+      geometry: p.geo,
+      parts: [p.geo],
+      isBase: i === 0,
     });
   }
 

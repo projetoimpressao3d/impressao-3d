@@ -852,7 +852,8 @@ export function ModelViewer({
           colorPreviewMode={colorPreviewMode}
           onSplitCompleted={(result) => {
             if (result.unified_download_url) {
-              setActive3DUrl(result.unified_download_url);
+              const sep = result.unified_download_url.includes("?") ? "&" : "?";
+              setActive3DUrl(`${result.unified_download_url}${sep}t=${Date.now()}`);
             }
             setColorPreviewMode(true);
           }}

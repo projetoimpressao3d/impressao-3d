@@ -19,7 +19,7 @@ from supabase import Client
 from app.deps import get_supabase_client, verify_internal_token
 from app.mesh.color_splitter import get_color_info, parse_3mf_colors
 from app.mesh.capper import close_color_piece
-from app.mesh.plate_packer import pack_pieces_to_plates
+from app.mesh.plate_packer import pack_pieces_to_plates, pack_components_2d
 from app.mesh.threemf_writer import write_plate_3mf_bytes
 from app.mesh.skeleton import suggest_structural_cuts
 from app.mesh.general_splitter import suggest_general_split
@@ -162,6 +162,18 @@ async def get_model_color_info(
     )
 
 
+def _center_and_ground_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Centraliza a malha em X e Y na origem (0, 0) e assenta sua base em Z = 0."""
+    mc = mesh.copy()
+    min_b, max_b = mc.bounds
+    cx = float((min_b[0] + max_b[0]) / 2.0)
+    cy = float((min_b[1] + max_b[1]) / 2.0)
+    mc.vertices[:, 0] -= cx
+    mc.vertices[:, 1] -= cy
+    mc.vertices[:, 2] -= float(min_b[2])
+    return mc
+
+
 # ---------------------------------------------------------------------------
 # POST /color-split/{model_id}/split — Separar e gerar 3MFs
 # ---------------------------------------------------------------------------
@@ -284,9 +296,21 @@ async def split_model_by_color(
                     is_subdivided=False,
                 ))
 
-        # Gerar também o arquivo .3MF unificado com todas as cores
-        all_meshes = [p.mesh for p in split_result.pieces]
-        all_colors = [p.filament.color_hex for p in split_result.pieces]
+        # Gerar também o arquivo .3MF unificado com todas as cores posicionadas e assentadas
+        all_meshes = []
+        all_colors = []
+        for plate_obj in pack_result.plates:
+            for placement in plate_obj.placements:
+                piece_mesh = (
+                    trimesh.util.concatenate(placement.packed_meshes)
+                    if placement.packed_meshes
+                    else placement.mesh
+                )
+                if payload.snap_to_floor:
+                    piece_mesh = _center_and_ground_mesh(piece_mesh)
+                all_meshes.append(piece_mesh)
+                all_colors.append(placement.color_hex)
+
         unified_3mf_bytes = write_plate_3mf_bytes(
             meshes=all_meshes,
             colors=all_colors,
@@ -444,8 +468,9 @@ async def subdivide_color_piece(
         # Sub-peças da cor cortada
         for i, sm in enumerate(sub_meshes):
             lbl = cut_inputs[i].label if i < len(cut_inputs) else f"Parte {i+1}"
+            sm_processed = _center_and_ground_mesh(sm) if payload.snap_to_floor else sm
             all_pieces_meshes.append((
-                sm,
+                sm_processed,
                 target_piece.filament.color_hex,
                 target_piece.extruder_index + 1,
                 f"Extruder {target_piece.extruder_index + 1} - {lbl}",
@@ -455,8 +480,21 @@ async def subdivide_color_piece(
         # Outras cores
         for p in split_result.pieces:
             if p is not target_piece:
+                if payload.snap_to_floor:
+                    sub_list = p.sub_meshes if p.sub_meshes else [p.mesh]
+                    if len(sub_list) > 1:
+                        packed_sub, _, _ = pack_components_2d(
+                            sub_list, plate_x, plate_y, plate_z, snap_to_floor=True
+                        )
+                        combo = trimesh.util.concatenate(packed_sub)
+                        p_mesh = _center_and_ground_mesh(combo)
+                    else:
+                        p_mesh = _center_and_ground_mesh(p.mesh)
+                else:
+                    p_mesh = p.mesh
+
                 all_pieces_meshes.append((
-                    p.mesh,
+                    p_mesh,
                     p.filament.color_hex,
                     p.extruder_index + 1,
                     f"Extruder {p.extruder_index + 1}",

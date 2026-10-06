@@ -177,9 +177,9 @@ export function ColorPiecesPreviewScene({ groups, selectedPlate }: ColorPiecesPr
     <>
       {/* Grupo rotacionado: converte 3MF (Z-up) para Three.js (Y-up) */}
       <group rotation={[-Math.PI / 2, 0, 0]}>
-        {layouts.flatMap(({ parts }) =>
+        {layouts.flatMap(({ parts }, li) =>
           parts.map(({ geometry, colorHex, offset }, pi) => (
-            <group key={`${colorHex}-${pi}`} position={offset}>
+            <group key={`layout-${li}-part-${pi}`} position={offset}>
               <mesh geometry={geometry} castShadow receiveShadow>
                 <meshStandardMaterial
                   color={new THREE.Color(colorHex)}
