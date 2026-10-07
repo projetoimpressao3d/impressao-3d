@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
 import { useState } from "react";
@@ -85,7 +85,7 @@ export function ModelCard({ model, plan }: ModelCardProps) {
           <p className="truncate text-xs text-gray-400">{model.original_filename}</p>
         )}
 
-        <p className="text-xs text-gray-400">Enviado em {formatDate(model.created_at)}</p>
+        <p className="text-xs text-gray-400" suppressHydrationWarning>Enviado em {formatDate(model.created_at)}</p>
 
         {deleteError && (
           <p className="mt-1 text-xs text-red-600">{deleteError}</p>

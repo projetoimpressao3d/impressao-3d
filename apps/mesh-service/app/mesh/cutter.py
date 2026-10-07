@@ -139,7 +139,9 @@ def _cut_mesh_by_planes_trimesh(
 
     accumulated.append(current)
     valid_pieces = [p for p in accumulated if len(p.vertices) > 0 and len(p.faces) > 0]
-    return valid_pieces if valid_pieces else [mesh]
+    if not valid_pieces:
+        raise RuntimeError("Fatiador trimesh falhou: Corte resultou em 0 peças válidas.")
+    return valid_pieces
 
 
 def cut_mesh_by_planes(

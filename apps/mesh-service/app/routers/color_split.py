@@ -11,7 +11,7 @@ import logging
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 import trimesh
 from pydantic import BaseModel
 from supabase import Client
@@ -83,6 +83,24 @@ class PlateOutput(BaseModel):
     label: str | None = None
     is_subdivided: bool = False
 
+
+
+import uuid
+import asyncio
+
+_TASKS: dict[str, dict] = {}
+
+class TaskResponse(BaseModel):
+    task_id: str
+
+@router.get("/tasks/{task_id}", summary="Check task status")
+async def get_task_status(
+    task_id: str,
+    _auth: None = Depends(verify_internal_token),
+):
+    if task_id not in _TASKS:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return _TASKS[task_id]
 
 class ColorSplitResponse(BaseModel):
     model_id: str
@@ -349,15 +367,34 @@ async def split_model_by_color(
 
 @router.post(
     "/{model_id}/subdivide-piece",
-    response_model=ColorSplitResponse,
-    summary="Subdividir peça oversized preservando todas as cores em 3MF unificado",
+    response_model=TaskResponse,
+    summary="Subdividir peça oversized (assíncrono)",
 )
 async def subdivide_color_piece(
     model_id: str,
     payload: SubdivideColorPieceRequest,
+    background_tasks: BackgroundTasks,
     supabase: Client = Depends(get_supabase_client),
     _auth: None = Depends(verify_internal_token),
-) -> ColorSplitResponse:
+) -> TaskResponse:
+    task_id = str(uuid.uuid4())
+    _TASKS[task_id] = {"status": "processing", "progress": 0}
+    
+    background_tasks.add_task(
+        _run_subdivide_task,
+        task_id=task_id,
+        model_id=model_id,
+        payload=payload,
+        supabase=supabase,
+    )
+    return TaskResponse(task_id=task_id)
+
+async def _run_subdivide_task(
+    task_id: str,
+    model_id: str,
+    payload: SubdivideColorPieceRequest,
+    supabase: Client,
+):
     """
     Subdivide uma cor específica que excedeu a mesa (via Character Split ou General Split),
     gera conectores mecânicos e cria tanto o 3MF unificado com todas as cores
@@ -459,8 +496,13 @@ async def subdivide_color_piece(
             connector_pin_shape=payload.connector_pin_shape,
         )
         if not sub_meshes:
-            logger.warning("Corte resultou em 0 peças; mantendo peça original da cor")
-            sub_meshes = [target_piece.mesh]
+            raise RuntimeError("O corte não gerou peças.")
+            
+        from app.mesh.fit_to_plate import fit_to_plate
+        final_sub_meshes = []
+        for sm in sub_meshes:
+            final_sub_meshes.extend(fit_to_plate(sm, plate_x, plate_y, plate_z))
+        sub_meshes = final_sub_meshes
 
         # 7. Reunir TODAS as peças (sub-peças da cor cortada + outras cores intactas)
         all_pieces_meshes: list[tuple[trimesh.Trimesh, str, int, str, bool]] = []
@@ -561,7 +603,7 @@ async def subdivide_color_piece(
             oversized_count,
         )
 
-        return ColorSplitResponse(
+        res = ColorSplitResponse(
             model_id=model_id,
             plates=plates_output,
             total_pieces=len(plates_output),
@@ -569,15 +611,12 @@ async def subdivide_color_piece(
             unified_download_url=unified_url,
             unified_file_name=unified_fname,
         )
+        _TASKS[task_id] = {"status": "completed", "result": res.model_dump()}
+        return
 
-    except HTTPException:
-        raise
     except Exception as exc:
         logger.exception("Erro ao subdividir peça de cor para o modelo %s: %s", model_id, exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro interno ao fatiar peça: {exc}",
-        ) from exc
+        _TASKS[task_id] = {"status": "failed", "error": str(exc)}
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 

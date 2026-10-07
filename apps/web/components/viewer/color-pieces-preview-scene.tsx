@@ -22,7 +22,7 @@
  */
 
 import { useMemo } from "react";
-import { OrbitControls } from "@react-three/drei";
+import { OrbitControls, Html } from "@react-three/drei";
 import * as THREE from "three";
 import type { BuildPlate } from "@/types/database";
 import type { ColorGroup } from "./threemf-colored-object";
@@ -194,11 +194,28 @@ export function ColorPiecesPreviewScene({ groups, selectedPlate }: ColorPiecesPr
       </group>
 
       {/* Mesas de trabalho (no espaco Three.js normal) */}
-      {selectedPlate && layouts.map(({ platePos }, i) => (
-        <group key={`plate-${i}`} position={platePos}>
-          <BuildPlateBox plate={selectedPlate} />
-        </group>
-      ))}
+      {selectedPlate && layouts.map(({ platePos, parts }, i) => {
+        // Obter a cor e o nome do extrusor (pegando do primeiro part, todos do layout têm a mesma cor/extruder)
+        const colorHex = parts[0]?.colorHex;
+        const group = groups.find(g => g.colorHex === colorHex);
+        const label = group?.label || `Extruder ${(group?.extruderIndex ?? i) + 1}`;
+        
+        return (
+          <group key={`plate-${i}`} position={platePos}>
+            <BuildPlateBox plate={selectedPlate} />
+            <Html
+              position={[0, (selectedPlate.build_volume_z_mm ?? 256) / 2 + 20, 0]}
+              center
+              transform
+              sprite
+            >
+              <div className="bg-gray-900/90 text-white text-xs px-3 py-1.5 rounded shadow pointer-events-none whitespace-nowrap border border-gray-700">
+                {label}
+              </div>
+            </Html>
+          </group>
+        );
+      })}
 
       <OrbitControls
         enablePan enableZoom enableRotate makeDefault

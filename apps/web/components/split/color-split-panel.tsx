@@ -127,6 +127,7 @@ export function ColorSplitPanel({
     connectorPinShape: "hex",
   });
   const [isSubdividing, setIsSubdividing] = useState(false);
+  const [progress, setProgress] = useState(0);
 
   const selectedPlate = buildPlates.find((p) => p.id === selectedPlateId);
   const is3mf = modelFormat === "3mf";
@@ -198,6 +199,7 @@ export function ColorSplitPanel({
     if (!subdividingPlate || !selectedPlateId) return;
     setIsSubdividing(true);
     setError(null);
+    setProgress(0);
 
     try {
       const res = await fetch(`/api/color-split/${modelId}/subdivide`, {
@@ -222,14 +224,39 @@ export function ColorSplitPanel({
         throw new Error(msg);
       }
 
-      const data = (await res.json()) as ColorSplitResult;
-      setSplitResult(data);
-      setSubdividingPlate(null);
-      onSplitCompleted?.(data);
+      const data = await res.json();
+      
+      if (data.task_id) {
+        let status = "processing";
+        while (status === "processing") {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          const pollRes = await fetch(`/api/color-split/tasks/${data.task_id}`);
+          if (!pollRes.ok) throw new Error("Erro ao verificar status da tarefa");
+          const pollData = await pollRes.json();
+          
+          if (pollData.progress !== undefined) {
+            setProgress(pollData.progress);
+          }
+          
+          if (pollData.status === "completed") {
+            setSplitResult(pollData.result);
+            setSubdividingPlate(null);
+            onSplitCompleted?.(pollData.result);
+            break;
+          } else if (pollData.status === "failed") {
+            throw new Error(pollData.error || "Erro no processamento da tarefa");
+          }
+        }
+      } else {
+        setSplitResult(data as ColorSplitResult);
+        setSubdividingPlate(null);
+        onSplitCompleted?.(data as ColorSplitResult);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsSubdividing(false);
+      setProgress(0);
     }
   };
 
@@ -401,13 +428,18 @@ export function ColorSplitPanel({
             disabled={isSubdividing || !selectedPlateId}
           >
             {isSubdividing ? (
-              <span className="flex items-center justify-center gap-2">
-                <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-                </svg>
-                Processando... pode levar 30-90s
-              </span>
+              <div className="flex flex-col items-center justify-center gap-1 w-full">
+                <span className="flex items-center gap-2">
+                  <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                  </svg>
+                  Processando... {progress}%
+                </span>
+                <div className="w-full bg-amber-800 rounded-full h-1.5 mt-1 overflow-hidden">
+                  <div className="bg-white h-1.5 rounded-full transition-all duration-300" style={{ width: `${progress}%` }}></div>
+                </div>
+              </div>
             ) : (
               "✂️ Fatiar e Gerar Arquivo Completo"
             )}

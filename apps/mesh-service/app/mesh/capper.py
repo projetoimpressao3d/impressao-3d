@@ -255,4 +255,19 @@ def close_color_piece(
     except Exception as e:
         logger.warning(f"Erro ao reparar normais: {e}")
 
+    # Passo 4: Fallback voxel remesh
+    if not mesh.is_watertight:
+        logger.warning("Capping falhou em gerar mesh manifold. Tentando voxel remesh fallback...")
+        try:
+            # Pitch de 0.4 mm para preservar detalhes mas forçar manifold
+            mesh = trimesh.voxel.creation.voxelize(mesh, pitch=0.4).marching_cubes
+            try:
+                trimesh.repair.fix_normals(mesh)
+                trimesh.repair.fix_winding(mesh)
+            except Exception as e:
+                pass
+            logger.info(f"Voxel remesh concluiu. Watertight = {mesh.is_watertight}")
+        except Exception as e:
+            logger.error(f"Erro no voxel remesh: {e}")
+
     return mesh
