@@ -43,8 +43,8 @@ def fit_to_plate(
         generate_connectors=False
     )
     
-    if not sub_meshes:
-        logger.warning("Horizontal split failed, returning original.")
+    if not sub_meshes or len(sub_meshes) <= 1:
+        logger.warning("Horizontal split failed or returned 1 piece, stopping recursion.")
         return [mesh]
         
     result = []
