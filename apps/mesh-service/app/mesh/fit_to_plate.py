@@ -1,7 +1,6 @@
 import logging
 import trimesh
-from .cutter import cut_mesh_by_planes
-from .models import CutPlaneInput
+from .cutter import cut_mesh_by_planes, CutPlaneInput
 
 logger = logging.getLogger(__name__)
 
