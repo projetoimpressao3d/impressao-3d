@@ -417,200 +417,209 @@ async def _run_subdivide_task(
     tmp_path = await download_to_tempfile(url, model["storage_path"])
 
     try:
-        # 2. Separar por cor
-        split_result = parse_3mf_colors(tmp_path)
-        if not split_result.pieces:
-            raise HTTPException(status_code=422, detail="Nenhuma cor detectada no modelo.")
+        def process_meshes():
+            # 2. Separar por cor
+            split_result = parse_3mf_colors(tmp_path)
+            if not split_result.pieces:
+                raise HTTPException(status_code=422, detail="Nenhuma cor detectada no modelo.")
 
-        # 3. Fechar buracos de todas as peças
-        for p in split_result.pieces:
-            p.mesh = close_color_piece(p.mesh, method=payload.cap_method)
-            p.is_watertight = p.mesh.is_watertight
+            # 3. Localizar a peça alvo do corte (pelo extruder_number)
+            target_piece = None
+            for p in split_result.pieces:
+                if p.extruder_index == payload.extruder_number - 1:
+                    target_piece = p
+                    break
 
-        # 4. Localizar a peça alvo do corte (pelo extruder_number)
-        target_piece = None
-        for p in split_result.pieces:
-            if p.extruder_index == payload.extruder_number - 1:
-                target_piece = p
-                break
+            if not target_piece:
+                target_piece = max(split_result.pieces, key=lambda p: len(p.mesh.faces))
 
-        if not target_piece:
-            target_piece = max(split_result.pieces, key=lambda p: len(p.mesh.faces))
-
-        # 5. Calcular planos de corte na peça alvo
-        cut_inputs: list[CutPlaneInput] = []
-        if payload.mode == "character":
-            try:
-                struct_res = suggest_structural_cuts(
-                    target_piece.mesh,
-                    sensitivity=payload.structural_sensitivity,
-                    build_plate=[plate_x, plate_y, plate_z],
-                    template=payload.character_template,
+            # 4. Fechar buracos das peças
+            # O target_piece PRECISA ser watertight para não causar segfault no manifold3d
+            for p in split_result.pieces:
+                needs_watertight = (p is target_piece)
+                p.mesh = close_color_piece(
+                    p.mesh, 
+                    method=payload.cap_method, 
+                    enable_voxel_fallback=needs_watertight
                 )
-                for cp in struct_res.cut_planes:
-                    cut_inputs.append(
-                        CutPlaneInput(
-                            normal=cp.normal,
-                            origin=cp.origin,
-                            label=cp.label,
-                            bbox_min=cp.bbox_min,
-                            bbox_max=cp.bbox_max,
-                            branch_pts=cp.branch_pts,
-                        )
-                    )
-            except Exception as e:
-                logger.warning("Falha ao sugerir cortes estruturais no modo character: %s", e)
+                p.is_watertight = p.mesh.is_watertight
 
-        # Fallback para general split se for o modo general ou se não encontrou cortes anatômicos
-        if not cut_inputs:
-            gran = payload.general_granularity if payload.general_granularity in ["auto", "low", "medium", "high"] else "auto"
-            try:
-                gen_res = suggest_general_split(
-                    target_piece.mesh,
-                    plate_dims={"x": plate_x, "y": plate_y, "z": plate_z},
-                    granularity=gran,
+            # 5. Calcular planos de corte na peça alvo
+            cut_inputs: list[CutPlaneInput] = []
+            if payload.mode == "character":
+                try:
+                    struct_res = suggest_structural_cuts(
+                        target_piece.mesh,
+                        sensitivity=payload.structural_sensitivity,
+                        build_plate=[plate_x, plate_y, plate_z],
+                        template=payload.character_template,
+                    )
+                    for cp in struct_res.cut_planes:
+                        cut_inputs.append(
+                            CutPlaneInput(
+                                normal=cp.normal,
+                                origin=cp.origin,
+                                label=cp.label,
+                                bbox_min=cp.bbox_min,
+                                bbox_max=cp.bbox_max,
+                                branch_pts=cp.branch_pts,
+                            )
+                        )
+                except Exception as e:
+                    logger.warning("Falha ao sugerir cortes estruturais no modo character: %s", e)
+
+            # Fallback para general split se for o modo general ou se não encontrou cortes anatômicos
+            if not cut_inputs:
+                gran = payload.general_granularity if payload.general_granularity in ["auto", "low", "medium", "high"] else "auto"
+                try:
+                    gen_res = suggest_general_split(
+                        target_piece.mesh,
+                        plate_dims={"x": plate_x, "y": plate_y, "z": plate_z},
+                        granularity=gran,
+                    )
+                    for cp in gen_res.cut_planes:
+                        cut_inputs.append(
+                            CutPlaneInput(
+                                normal=cp.normal,
+                                origin=cp.origin,
+                                label=cp.label,
+                            )
+                        )
+                except Exception as e:
+                    logger.warning("Falha ao sugerir cortes gerais: %s", e)
+
+            if not cut_inputs:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Nenhum plano de corte foi gerado para esta peça nas dimensões da mesa informada.",
                 )
-                for cp in gen_res.cut_planes:
-                    cut_inputs.append(
-                        CutPlaneInput(
-                            normal=cp.normal,
-                            origin=cp.origin,
-                            label=cp.label,
-                        )
-                    )
-            except Exception as e:
-                logger.warning("Falha ao sugerir cortes gerais: %s", e)
 
-        if not cut_inputs:
-            raise HTTPException(
-                status_code=400,
-                detail="Nenhum plano de corte foi gerado para esta peça nas dimensões da mesa informada.",
+            # 6. Executar cortes com conectores mecânicos na peça
+            sub_meshes = cut_mesh_by_planes(
+                target_piece.mesh,
+                cut_inputs,
+                generate_connectors=payload.generate_connectors,
+                connector_tolerance_mm=payload.connector_tolerance_mm,
+                connector_pin_shape=payload.connector_pin_shape,
             )
+            if not sub_meshes:
+                raise RuntimeError("O corte não gerou peças.")
+                
+            from app.mesh.fit_to_plate import fit_to_plate
+            final_sub_meshes = []
+            for sm in sub_meshes:
+                final_sub_meshes.extend(fit_to_plate(sm, plate_x, plate_y, plate_z))
+            sub_meshes = final_sub_meshes
 
-        # 6. Executar cortes com conectores mecânicos na peça
-        sub_meshes = cut_mesh_by_planes(
-            target_piece.mesh,
-            cut_inputs,
-            generate_connectors=payload.generate_connectors,
-            connector_tolerance_mm=payload.connector_tolerance_mm,
-            connector_pin_shape=payload.connector_pin_shape,
-        )
-        if not sub_meshes:
-            raise RuntimeError("O corte não gerou peças.")
-            
-        from app.mesh.fit_to_plate import fit_to_plate
-        final_sub_meshes = []
-        for sm in sub_meshes:
-            final_sub_meshes.extend(fit_to_plate(sm, plate_x, plate_y, plate_z))
-        sub_meshes = final_sub_meshes
+            # 7. Reunir TODAS as peças (sub-peças da cor cortada + outras cores intactas)
+            all_pieces_meshes: list[tuple[trimesh.Trimesh, str, int, str, bool]] = []
 
-        # 7. Reunir TODAS as peças (sub-peças da cor cortada + outras cores intactas)
-        all_pieces_meshes: list[tuple[trimesh.Trimesh, str, int, str, bool]] = []
-
-        # Sub-peças da cor cortada
-        for i, sm in enumerate(sub_meshes):
-            lbl = cut_inputs[i].label if i < len(cut_inputs) else f"Parte {i+1}"
-            sm_processed = _center_and_ground_mesh(sm) if payload.snap_to_floor else sm
-            all_pieces_meshes.append((
-                sm_processed,
-                target_piece.filament.color_hex,
-                target_piece.extruder_index + 1,
-                f"Extruder {target_piece.extruder_index + 1} - {lbl}",
-                True,
-            ))
-
-        # Outras cores
-        for p in split_result.pieces:
-            if p is not target_piece:
-                if payload.snap_to_floor:
-                    sub_list = p.sub_meshes if p.sub_meshes else [p.mesh]
-                    if len(sub_list) > 1:
-                        packed_sub, _, _ = pack_components_2d(
-                            sub_list, plate_x, plate_y, plate_z, snap_to_floor=True
-                        )
-                        combo = trimesh.util.concatenate(packed_sub)
-                        p_mesh = _center_and_ground_mesh(combo)
-                    else:
-                        p_mesh = _center_and_ground_mesh(p.mesh)
-                else:
-                    p_mesh = p.mesh
-
+            # Sub-peças da cor cortada
+            for i, sm in enumerate(sub_meshes):
+                lbl = cut_inputs[i].label if i < len(cut_inputs) else f"Parte {i+1}"
+                sm_processed = _center_and_ground_mesh(sm) if payload.snap_to_floor else sm
                 all_pieces_meshes.append((
-                    p_mesh,
-                    p.filament.color_hex,
-                    p.extruder_index + 1,
-                    f"Extruder {p.extruder_index + 1}",
-                    False,
+                    sm_processed,
+                    target_piece.filament.color_hex,
+                    target_piece.extruder_index + 1,
+                    f"Extruder {target_piece.extruder_index + 1} - {lbl}",
+                    True,
                 ))
 
-        # 8. Gerar arquivo .3MF UNIFICADO com TODAS as peças e TODAS as cores
-        unified_3mf_bytes = write_plate_3mf_bytes(
-            meshes=[m for m, _, _, _, _ in all_pieces_meshes],
-            colors=[c for _, c, _, _, _ in all_pieces_meshes],
-            model_name=f"{split_result.model_name}_completo",
-            snap_to_floor=payload.snap_to_floor,
-        )
-        safe_model_name = sanitize_storage_key(split_result.model_name)
-        unified_fname = f"{safe_model_name}_completo_todas_cores.3mf"
-        unified_storage_path = f"pieces/{payload.user_id}/{model_id}/{unified_fname}"
-        upload_bytes(supabase, unified_storage_path, unified_3mf_bytes, content_type="model/3mf")
-        unified_url = create_download_url(supabase, unified_storage_path, expires_in=3600)
+            # Outras cores
+            for p in split_result.pieces:
+                if p is not target_piece:
+                    if payload.snap_to_floor:
+                        sub_list = p.sub_meshes if p.sub_meshes else [p.mesh]
+                        if len(sub_list) > 1:
+                            packed_sub, _, _ = pack_components_2d(
+                                sub_list, plate_x, plate_y, plate_z, snap_to_floor=True
+                            )
+                            combo = trimesh.util.concatenate(packed_sub)
+                            p_mesh = _center_and_ground_mesh(combo)
+                        else:
+                            p_mesh = _center_and_ground_mesh(p.mesh)
+                    else:
+                        p_mesh = p.mesh
 
-        # 9. Gerar arquivos individuais por peça e verificar se cabem na mesa
-        plates_output: list[PlateOutput] = []
-        oversized_count = 0
+                    all_pieces_meshes.append((
+                        p_mesh,
+                        p.filament.color_hex,
+                        p.extruder_index + 1,
+                        f"Extruder {p.extruder_index + 1}",
+                        False,
+                    ))
 
-        for idx, (mesh_obj, color_hex, ext_num, label, is_sub) in enumerate(all_pieces_meshes):
-            extents = [round(float(e), 1) for e in mesh_obj.extents]
-            fits = (
-                extents[0] <= plate_x
-                and extents[1] <= plate_y
-                and extents[2] <= plate_z
-            )
-            if not fits:
-                oversized_count += 1
-
-            # Upload individual .3mf
-            indiv_bytes = write_plate_3mf_bytes(
-                meshes=[mesh_obj],
-                colors=[color_hex],
-                model_name=f"{safe_model_name}_p{idx+1}",
+            # 8. Gerar arquivo .3MF UNIFICADO com TODAS as peças e TODAS as cores
+            unified_3mf_bytes = write_plate_3mf_bytes(
+                meshes=[m for m, _, _, _, _ in all_pieces_meshes],
+                colors=[c for _, c, _, _, _ in all_pieces_meshes],
+                model_name=f"{split_result.model_name}_completo",
                 snap_to_floor=payload.snap_to_floor,
             )
-            safe_color = color_hex.replace("#", "")
-            safe_label = sanitize_storage_key(label)
-            fname = f"{model_id}_{safe_label}_{safe_color}.3mf"
-            indiv_path = f"pieces/{payload.user_id}/{model_id}/{fname}"
-            upload_bytes(supabase, indiv_path, indiv_bytes, content_type="model/3mf")
-            indiv_url = create_download_url(supabase, indiv_path, expires_in=3600)
+            safe_model_name = sanitize_storage_key(split_result.model_name)
+            unified_fname = f"{safe_model_name}_completo_todas_cores.3mf"
+            unified_storage_path = f"pieces/{payload.user_id}/{model_id}/{unified_fname}"
+            upload_bytes(supabase, unified_storage_path, unified_3mf_bytes, content_type="model/3mf")
+            unified_url = create_download_url(supabase, unified_storage_path, expires_in=3600)
 
-            plates_output.append(PlateOutput(
-                plate_number=idx + 1,
-                extruder_number=ext_num,
-                color_hex=color_hex,
-                storage_path=indiv_path,
-                download_url=indiv_url,
-                fits_in_plate=fits,
-                extents_mm=extents,
-                label=label,
-                is_subdivided=is_sub,
-            ))
+            # 9. Gerar arquivos individuais por peça e verificar se cabem na mesa
+            plates_output: list[PlateOutput] = []
+            oversized_count = 0
 
-        logger.info(
-            "Subdivisão concluída para modelo %s: %d peças geradas, %d oversized",
-            model_id,
-            len(plates_output),
-            oversized_count,
-        )
+            for idx, (mesh_obj, color_hex, ext_num, label, is_sub) in enumerate(all_pieces_meshes):
+                extents = [round(float(e), 1) for e in mesh_obj.extents]
+                fits = (
+                    extents[0] <= plate_x
+                    and extents[1] <= plate_y
+                    and extents[2] <= plate_z
+                )
+                if not fits:
+                    oversized_count += 1
 
-        res = ColorSplitResponse(
-            model_id=model_id,
-            plates=plates_output,
-            total_pieces=len(plates_output),
-            oversized_count=oversized_count,
-            unified_download_url=unified_url,
-            unified_file_name=unified_fname,
-        )
+                # Upload individual .3mf
+                indiv_bytes = write_plate_3mf_bytes(
+                    meshes=[mesh_obj],
+                    colors=[color_hex],
+                    model_name=f"{safe_model_name}_p{idx+1}",
+                    snap_to_floor=payload.snap_to_floor,
+                )
+                safe_color = color_hex.replace("#", "")
+                safe_label = sanitize_storage_key(label)
+                fname = f"{model_id}_{safe_label}_{safe_color}.3mf"
+                indiv_path = f"pieces/{payload.user_id}/{model_id}/{fname}"
+                upload_bytes(supabase, indiv_path, indiv_bytes, content_type="model/3mf")
+                indiv_url = create_download_url(supabase, indiv_path, expires_in=3600)
+
+                plates_output.append(PlateOutput(
+                    plate_number=idx + 1,
+                    extruder_number=ext_num,
+                    color_hex=color_hex,
+                    storage_path=indiv_path,
+                    download_url=indiv_url,
+                    fits_in_plate=fits,
+                    extents_mm=extents,
+                    label=label,
+                    is_subdivided=is_sub,
+                ))
+
+            logger.info(
+                "Subdivisão concluída para modelo %s: %d peças geradas, %d oversized",
+                model_id,
+                len(plates_output),
+                oversized_count,
+            )
+
+            return ColorSplitResponse(
+                model_id=model_id,
+                plates=plates_output,
+                total_pieces=len(plates_output),
+                oversized_count=oversized_count,
+                unified_download_url=unified_url,
+                unified_file_name=unified_fname,
+            )
+
+        res = await asyncio.to_thread(process_meshes)
         _TASKS[task_id] = {"status": "completed", "result": res.model_dump()}
         return
 
