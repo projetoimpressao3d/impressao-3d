@@ -111,7 +111,7 @@ def _cut_mesh_by_planes_trimesh(
             bottom = trimesh.intersections.slice_mesh_plane(current, plane_normal=-n, plane_origin=o, cap=True)
 
             if len(top.vertices) > 0 and len(bottom.vertices) > 0:
-                if generate_connectors:
+                if generate_connectors and top.is_watertight and bottom.is_watertight:
                     try:
                         m_top = _trimesh_to_manifold(top)
                         m_bottom = _trimesh_to_manifold(bottom)
@@ -129,6 +129,8 @@ def _cut_mesh_by_planes_trimesh(
                             bottom = _manifold_to_trimesh(m_bottom)
                     except Exception as conn_err:
                         logger.warning("Falha ao gerar conector para o plano %d (%s): %s", i + 1, plane.label, conn_err)
+                elif generate_connectors:
+                    logger.warning("Conectores ignorados para plano %d: as fatias resultantes não são watertight", i + 1)
 
                 accumulated.append(top)
                 current = bottom
@@ -159,12 +161,14 @@ def cut_mesh_by_planes(
 
     # Converter malha inicial para manifold3d e verificar validade
     current: Manifold | None = None
-    try:
-        current = _trimesh_to_manifold(mesh)
-        if current.num_vert() == 0 or current.status() != 0:
+    
+    if mesh.is_watertight:
+        try:
+            current = _trimesh_to_manifold(mesh)
+            if current.num_vert() == 0 or current.status() != 0:
+                current = None
+        except Exception:
             current = None
-    except Exception:
-        current = None
 
     if current is None:
         logger.info("Malha de entrada possui micro-arestas abertas; utilizando fatiador robusto trimesh")
