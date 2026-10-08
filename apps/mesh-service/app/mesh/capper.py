@@ -227,6 +227,7 @@ def cap_open_mesh(
 def close_color_piece(
     mesh: trimesh.Trimesh,
     method: str = "earcut",
+    enable_voxel_fallback: bool = False,
 ) -> trimesh.Trimesh:
     """
     Pipeline completo para preparar uma peca colorida para impressao:
@@ -255,12 +256,10 @@ def close_color_piece(
     except Exception as e:
         logger.warning(f"Erro ao reparar normais: {e}")
 
-    # Passo 4: Fallback voxel remesh
-    if not mesh.is_watertight:
+    # Passo 4: Fallback voxel remesh (OPCIONAL)
+    if not mesh.is_watertight and enable_voxel_fallback:
         logger.warning("Capping falhou em gerar mesh manifold. Tentando voxel remesh fallback...")
         try:
-            # Dynamically calculate pitch to avoid OOM on 512MB RAM servers
-            # Max grid size ~150^3 to keep memory under 100MB
             max_extent = float(max(mesh.extents))
             pitch = max(0.4, max_extent / 150.0)
             logger.info(f"Voxelizando com pitch={pitch:.2f}mm para max_extent={max_extent:.1f}mm")
