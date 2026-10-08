@@ -259,8 +259,13 @@ def close_color_piece(
     if not mesh.is_watertight:
         logger.warning("Capping falhou em gerar mesh manifold. Tentando voxel remesh fallback...")
         try:
-            # Pitch de 0.4 mm para preservar detalhes mas forçar manifold
-            mesh = trimesh.voxel.creation.voxelize(mesh, pitch=0.4).marching_cubes
+            # Dynamically calculate pitch to avoid OOM on 512MB RAM servers
+            # Max grid size ~150^3 to keep memory under 100MB
+            max_extent = float(max(mesh.extents))
+            pitch = max(0.4, max_extent / 150.0)
+            logger.info(f"Voxelizando com pitch={pitch:.2f}mm para max_extent={max_extent:.1f}mm")
+            
+            mesh = trimesh.voxel.creation.voxelize(mesh, pitch=pitch).marching_cubes
             try:
                 trimesh.repair.fix_normals(mesh)
                 trimesh.repair.fix_winding(mesh)
