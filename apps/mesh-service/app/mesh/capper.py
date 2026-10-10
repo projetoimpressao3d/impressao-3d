@@ -261,7 +261,8 @@ def close_color_piece(
         logger.warning("Capping falhou em gerar mesh manifold. Tentando voxel remesh fallback...")
         try:
             max_extent = float(max(mesh.extents))
-            pitch = max(0.4, max_extent / 150.0)
+            # Grid size max 200^3 (8M voxels) is safe for 2GB RAM
+            pitch = max(0.4, max_extent / 200.0)
             logger.info(f"Voxelizando com pitch={pitch:.2f}mm para max_extent={max_extent:.1f}mm")
             
             mesh = trimesh.voxel.creation.voxelize(mesh, pitch=pitch).marching_cubes
