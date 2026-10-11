@@ -781,12 +781,19 @@ function parseStandardMultiObject(objXml: string): ParseResult | null {
   const groups: ColorGroup[] = [];
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
+    const centeredPos = new Float32Array(p.positions.length);
+    for (let j = 0; j < p.positions.length; j += 3) {
+      centeredPos[j] = p.positions[j] - cx;
+      centeredPos[j + 1] = p.positions[j + 1] - cy;
+      centeredPos[j + 2] = p.positions[j + 2] - cz;
+    }
+    const centeredGeo = buildGeoFromPositions(centeredPos);
     groups.push({
       extruderIndex: p.pindex,
       colorHex: p.colorHex,
       label: `Mesa ${i + 1} (Extruder ${p.pindex + 1})`,
-      geometry: p.geo,
-      parts: [p.geo],
+      geometry: centeredGeo,
+      parts: [centeredGeo],
       isBase: i === 0,
     });
   }
@@ -796,9 +803,9 @@ function parseStandardMultiObject(objXml: string): ParseResult | null {
   const n = basePosAttr?.count ?? 0;
   const centeredYUp = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
-    centeredYUp[i * 3] = basePosAttr!.getX(i) - cx;
-    centeredYUp[i * 3 + 1] = -(basePosAttr!.getZ(i) - cz);
-    centeredYUp[i * 3 + 2] = basePosAttr!.getY(i) - cy;
+    centeredYUp[i * 3] = basePosAttr!.getX(i);
+    centeredYUp[i * 3 + 1] = -basePosAttr!.getZ(i);
+    centeredYUp[i * 3 + 2] = basePosAttr!.getY(i);
   }
 
   const bbox = new THREE.Box3(
