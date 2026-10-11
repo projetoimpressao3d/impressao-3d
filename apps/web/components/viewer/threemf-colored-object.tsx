@@ -988,7 +988,7 @@ export function ThreeMFColoredObject({
   return (
     <group rotation={[-Math.PI / 2, 0, 0]}>
       {result.groups.map((g, i) => (
-        <ColorMesh key={g.extruderIndex} group={g} renderOrder={i} opacity={opacity} />
+        <ColorMesh key={`${g.extruderIndex}-${i}`} group={g} renderOrder={i} opacity={opacity} />
       ))}
     </group>
   );

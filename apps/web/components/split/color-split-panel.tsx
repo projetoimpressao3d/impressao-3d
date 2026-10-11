@@ -45,6 +45,8 @@ interface ColorSplitPanelProps {
   // After any split/subdivide completes, propagate to the viewer for 3D preview
   onSplitCompleted?: (result: ColorSplitResult) => void;
   onReset?: () => void;
+  selectedColorPlateIdx?: number | "all";
+  onSelectColorPlateIdx?: (idx: number | "all") => void;
 }
 
 
@@ -100,6 +102,8 @@ export function ColorSplitPanel({
   onSplitOversizedPiece,
   onSplitCompleted,
   onReset,
+  selectedColorPlateIdx,
+  onSelectColorPlateIdx,
 }: ColorSplitPanelProps) {
 
   const [colorInfo, setColorInfo] = useState<{
@@ -653,19 +657,29 @@ export function ColorSplitPanel({
               return (
                 <div
                   key={`${plate.plate_number}-${plate.extruder_number}-${idx}`}
-                  className={`flex items-center gap-3 rounded-lg border p-3 ${
-                    plate.is_subdivided
-                      ? "border-amber-700/50 bg-amber-950/20"
-                      : "border-gray-700 bg-gray-800/60"
+                  onClick={() => onSelectColorPlateIdx?.(idx)}
+                  className={`flex items-center gap-3 rounded-lg border p-3 cursor-pointer transition-all ${
+                    selectedColorPlateIdx === idx
+                      ? "border-emerald-500 bg-emerald-950/40 ring-1 ring-emerald-500 shadow-md"
+                      : plate.is_subdivided
+                      ? "border-amber-700/50 bg-amber-950/20 hover:border-gray-600 hover:bg-gray-800/80"
+                      : "border-gray-700 bg-gray-800/60 hover:border-gray-600 hover:bg-gray-800/80"
                   }`}
                 >
                   <ColorSwatch hex={plate.color_hex} />
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs font-semibold text-white truncate">
-                      {plate.is_subdivided && <span className="text-amber-400 mr-1">✂</span>}
-                      {label}
-                    </p>
-                    <p className="text-[10px] text-gray-400 font-mono">{sizeStr}</p>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <p className="text-xs font-semibold text-white truncate">
+                        {plate.is_subdivided && <span className="text-amber-400 mr-1">✂</span>}
+                        {label}
+                      </p>
+                      {selectedColorPlateIdx === idx && (
+                        <span className="rounded bg-emerald-600/90 px-1.5 py-0.5 text-[9px] font-semibold text-white uppercase tracking-wider">
+                          👁 3D Ativo
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-gray-400 font-mono mt-0.5">{sizeStr}</p>
                     {!plate.fits_in_plate && (
                       <div className="mt-1 flex flex-col items-start gap-1">
                         <p className="text-[10px] text-amber-400">
@@ -674,7 +688,8 @@ export function ColorSplitPanel({
                         {hasSubscription && (
                           <button
                             type="button"
-                            onClick={() => {
+                            onClick={(e) => {
+                              e.stopPropagation();
                               setSubdividingPlate(plate);
                               setError(null);
                               onSplitOversizedPiece?.(plate);
@@ -687,19 +702,38 @@ export function ColorSplitPanel({
                       </div>
                     )}
                   </div>
-                  {hasSubscription ? (
-                    <a
-                      href={plate.download_url}
-                      download
-                      className="flex-shrink-0 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 transition-colors"
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSelectColorPlateIdx?.(idx);
+                      }}
+                      className={`rounded-lg px-2 py-1.5 text-xs font-medium transition ${
+                        selectedColorPlateIdx === idx
+                          ? "bg-emerald-600 text-white shadow-sm"
+                          : "bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white"
+                      }`}
+                      title="Exibir esta mesa no visualizador 3D"
                     >
-                      ⬇
-                    </a>
-                  ) : (
-                    <span className="flex-shrink-0 rounded-lg bg-gray-700 px-3 py-1.5 text-xs font-semibold text-gray-400">
-                      🔒 Pro
-                    </span>
-                  )}
+                      👁 Ver
+                    </button>
+                    {hasSubscription ? (
+                      <a
+                        href={plate.download_url}
+                        download
+                        onClick={(e) => e.stopPropagation()}
+                        className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 transition-colors shadow-sm"
+                        title="Baixar .3mf desta mesa"
+                      >
+                        ⬇
+                      </a>
+                    ) : (
+                      <span className="rounded-lg bg-gray-700 px-3 py-1.5 text-xs font-semibold text-gray-400">
+                        🔒 Pro
+                      </span>
+                    )}
+                  </div>
                 </div>
               );
             })}

@@ -16,7 +16,7 @@ import type {
 import { ViewerOverlay } from "./viewer-overlay";
 import { SplitPanel } from "@/components/split/split-panel";
 import { PieceDownload } from "@/components/split/piece-download";
-import { ColorSplitPanel } from "@/components/split/color-split-panel";
+import { ColorSplitPanel, type ColorSplitResult } from "@/components/split/color-split-panel";
 import { useThreeMFParsed, type ColorGroup } from "./threemf-colored-object";
 
 // Dynamic import com ssr: false — Three.js NÃO pode rodar no servidor
@@ -239,7 +239,31 @@ export function ModelViewer({
   const [colorPreviewMode, setColorPreviewMode] = useState(false);
   const [active3DUrl, setActive3DUrl] = useState<string | null>(null);
 
-  const current3DUrl = active3DUrl ?? signedUrl;
+  // ── Modo de ferramenta para arquivos 3MF ─────────────────────────────
+  // "colors": separação por cor (ColorSplitPanel)
+  // "linear": corte linear manual (SplitPanel)
+  // Para STL, sempre é "linear" implicitamente.
+  const [toolMode, setToolMode] = useState<"colors" | "linear">(
+    model.format === "3mf" ? "colors" : "linear",
+  );
+
+  // ── Seletor de Mesas (Alternativa 1) ──────────────────────────────────
+  const [colorSplitResult, setColorSplitResult] = useState<ColorSplitResult | null>(null);
+  const [selectedColorPlateIdx, setSelectedColorPlateIdx] = useState<number | "all">("all");
+
+  const isIndividualPlateSelected =
+    toolMode === "colors" &&
+    selectedColorPlateIdx !== "all" &&
+    colorSplitResult !== null &&
+    colorSplitResult.plates[selectedColorPlateIdx as number] !== undefined;
+
+  const individualPlate = isIndividualPlateSelected
+    ? colorSplitResult!.plates[selectedColorPlateIdx as number]
+    : null;
+
+  const current3DUrl = individualPlate?.download_url ?? active3DUrl ?? signedUrl;
+  const effectiveColorPreviewMode = isIndividualPlateSelected ? false : colorPreviewMode;
+
   const { result: parsedThreeMF } = useThreeMFParsed(
     model.format === "3mf" && current3DUrl ? current3DUrl : ""
   );
@@ -249,14 +273,6 @@ export function ModelViewer({
       setColorGroups(parsedThreeMF.groups);
     }
   }, [parsedThreeMF]);
-
-  // ── Modo de ferramenta para arquivos 3MF ─────────────────────────────
-  // "colors": separação por cor (ColorSplitPanel)
-  // "linear": corte linear manual (SplitPanel)
-  // Para STL, sempre é "linear" implicitamente.
-  const [toolMode, setToolMode] = useState<"colors" | "linear">(
-    model.format === "3mf" ? "colors" : "linear",
-  );
 
   // ── Conectores mecânicos para montagem pós-impressão ──────────────────
   const [generateConnectors, setGenerateConnectors] = useState<boolean>(true);
@@ -325,6 +341,17 @@ export function ModelViewer({
     }
     return computedDims;
   }, [model, computedDims]);
+
+  const effectiveDims = useMemo<ModelDimensions | null>(() => {
+    if (individualPlate && individualPlate.extents_mm && individualPlate.extents_mm.length >= 3) {
+      return {
+        x: Math.round(individualPlate.extents_mm[0] * 10) / 10,
+        y: Math.round(individualPlate.extents_mm[1] * 10) / 10,
+        z: Math.round(individualPlate.extents_mm[2] * 10) / 10,
+      };
+    }
+    return dims;
+  }, [individualPlate, dims]);
 
   const selectedPlate =
     buildPlates.find((p) => p.id === selectedPlateId) ?? null;
@@ -736,7 +763,82 @@ export function ModelViewer({
   return (
     <div>
       <div className="relative overflow-hidden rounded-xl border border-gray-800 bg-gray-900 shadow-lg">
-        {/* Toggle flutuante de visualização rápida no topo do canvas */}
+        {/* Floating Plate Selector Bar (para separação por cores subdividida) */}
+        {toolMode === "colors" && colorSplitResult && colorSplitResult.plates.length > 0 && (
+          <div className="absolute top-3 left-3 right-3 z-10 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-700/80 bg-gray-900/90 p-2 shadow-xl backdrop-blur-md">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1">
+                <span>🖨️</span> Mesa Selecionada:
+              </span>
+              <select
+                value={selectedColorPlateIdx === "all" ? "all" : String(selectedColorPlateIdx)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setSelectedColorPlateIdx(val === "all" ? "all" : parseInt(val, 10));
+                }}
+                className="rounded-md border border-gray-600 bg-gray-800 px-2.5 py-1 text-xs font-medium text-white shadow-sm focus:border-emerald-500 focus:outline-none"
+              >
+                <option value="all">🌐 Todas as Mesas ({colorSplitResult.plates.length} mesas enfileiradas)</option>
+                {colorSplitResult.plates.map((plate, idx) => {
+                  const dimsLabel =
+                    plate.extents_mm && plate.extents_mm.length >= 3
+                      ? ` (${plate.extents_mm[0].toFixed(0)}×${plate.extents_mm[1].toFixed(0)}×${plate.extents_mm[2].toFixed(0)}mm)`
+                      : "";
+                  return (
+                    <option key={idx} value={String(idx)}>
+                      Mesa {plate.plate_number}: {plate.label || `Cor #${plate.color_hex}`}{dimsLabel}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                disabled={selectedColorPlateIdx === "all" || selectedColorPlateIdx === 0}
+                onClick={() => {
+                  if (typeof selectedColorPlateIdx === "number" && selectedColorPlateIdx > 0) {
+                    setSelectedColorPlateIdx(selectedColorPlateIdx - 1);
+                  }
+                }}
+                className="rounded bg-gray-800 px-2 py-1 text-xs font-medium text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Mesa anterior"
+              >
+                ◀ Ant
+              </button>
+              <button
+                type="button"
+                disabled={
+                  selectedColorPlateIdx === "all" ||
+                  selectedColorPlateIdx === colorSplitResult.plates.length - 1
+                }
+                onClick={() => {
+                  if (typeof selectedColorPlateIdx === "number" && selectedColorPlateIdx < colorSplitResult.plates.length - 1) {
+                    setSelectedColorPlateIdx(selectedColorPlateIdx + 1);
+                  }
+                }}
+                className="rounded bg-gray-800 px-2 py-1 text-xs font-medium text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Próxima mesa"
+              >
+                Próx ▶
+              </button>
+
+              {individualPlate && (
+                <a
+                  href={individualPlate.download_url}
+                  download={`mesa-${individualPlate.plate_number}.3mf`}
+                  className="ml-1 inline-flex items-center gap-1 rounded bg-emerald-600 px-2 py-1 text-xs font-medium text-white shadow hover:bg-emerald-500"
+                  title="Baixar 3MF desta mesa individual"
+                >
+                  ⬇️ Baixar Mesa
+                </a>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Toggle flutuante de visualização rápida no topo do canvas (modo corte linear) */}
         {isInSplitMode && cutPlanes.length > 0 && (
           <div className="absolute top-3 left-3 z-10 flex items-center gap-1 rounded-lg border border-gray-700/80 bg-gray-900/85 p-1 shadow-lg backdrop-blur-md">
             <button
@@ -780,7 +882,7 @@ export function ModelViewer({
               onCutPlaneMoved={handleCutPlaneMoved}
               onDragEnd={handleDragEnd}
               onGeometryReady={handleGeometryReady}
-              colorPreviewMode={colorPreviewMode}
+              colorPreviewMode={effectiveColorPreviewMode}
               colorGroups={colorGroups}
               onGroupsParsed={setColorGroups}
             />
@@ -794,7 +896,7 @@ export function ModelViewer({
         {/* Overlay de visualização (exibido apenas fora do modo split) */}
         {!isInSplitMode && splitMode !== "done" && (
           <ViewerOverlay
-            dims={dims}
+            dims={effectiveDims}
             buildPlates={buildPlates}
             selectedPlateId={selectedPlateId}
             onPlateChange={setSelectedPlateId}
@@ -850,7 +952,13 @@ export function ModelViewer({
           hasSubscription={hasSubscription}
           onShowPreview={colorGroups.length > 0 ? () => setColorPreviewMode((v) => !v) : undefined}
           colorPreviewMode={colorPreviewMode}
+          selectedColorPlateIdx={selectedColorPlateIdx}
+          onSelectColorPlateIdx={setSelectedColorPlateIdx}
           onSplitCompleted={(result) => {
+            setColorSplitResult(result);
+            if (result.plates && result.plates.length > 0) {
+              setSelectedColorPlateIdx(0);
+            }
             if (result.unified_download_url) {
               const sep = result.unified_download_url.includes("?") ? "&" : "?";
               setActive3DUrl(`${result.unified_download_url}${sep}t=${Date.now()}`);
@@ -860,6 +968,8 @@ export function ModelViewer({
           onReset={() => {
             setActive3DUrl(null);
             setColorPreviewMode(false);
+            setColorSplitResult(null);
+            setSelectedColorPlateIdx("all");
           }}
         />
 

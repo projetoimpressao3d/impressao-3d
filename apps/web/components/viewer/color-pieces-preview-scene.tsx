@@ -21,7 +21,8 @@
  *  - Para sentar na base: meshOffset.z = -plateH/2 - partBbox.min.z
  */
 
-import { useMemo } from "react";
+import { useMemo, useEffect } from "react";
+import { useThree } from "@react-three/fiber";
 import { OrbitControls, Html } from "@react-three/drei";
 import * as THREE from "three";
 import type { BuildPlate } from "@/types/database";
@@ -54,6 +55,18 @@ export function ColorPiecesPreviewScene({ groups, selectedPlate }: ColorPiecesPr
   const plateD  = selectedPlate?.build_volume_y_mm ?? 256;
   const plateH  = selectedPlate?.build_volume_z_mm ?? 256;
   const GAP     = Math.max(80, plateW * 0.4);
+
+  const { camera } = useThree();
+
+  useEffect(() => {
+    const totalW = groups.length * plateW + Math.max(0, groups.length - 1) * GAP;
+    if (totalW > 0 && camera) {
+      // Ajusta a distância da câmera para enquadrar todas as mesas na largura da tela
+      const dist = Math.max(280, (totalW / 2) / Math.tan((45 * Math.PI) / 360) * 1.15);
+      camera.position.set(0, dist * 0.45, dist);
+      camera.lookAt(0, 0, 0);
+    }
+  }, [groups.length, plateW, GAP, camera]);
 
   const layouts = useMemo((): PlateLayout[] => {
     const result: PlateLayout[] = [];
@@ -194,11 +207,10 @@ export function ColorPiecesPreviewScene({ groups, selectedPlate }: ColorPiecesPr
       </group>
 
       {/* Mesas de trabalho (no espaco Three.js normal) */}
-      {selectedPlate && layouts.map(({ platePos, parts }, i) => {
-        // Obter a cor e o nome do extrusor (pegando do primeiro part, todos do layout têm a mesma cor/extruder)
-        const colorHex = parts[0]?.colorHex;
-        const group = groups.find(g => g.colorHex === colorHex);
-        const label = group?.label || `Extruder ${(group?.extruderIndex ?? i) + 1}`;
+      {selectedPlate && layouts.map(({ platePos }, i) => {
+        // Obter o label exato deste grupo individual
+        const group = groups[i];
+        const label = group?.label || `Mesa ${i + 1} (Extruder ${(group?.extruderIndex ?? i) + 1})`;
         
         return (
           <group key={`plate-${i}`} position={platePos}>
