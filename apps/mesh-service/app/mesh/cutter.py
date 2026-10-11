@@ -162,7 +162,7 @@ def cut_mesh_by_planes(
     # Converter malha inicial para manifold3d e verificar validade
     current: Manifold | None = None
     
-    if mesh.is_watertight:
+    if getattr(mesh, '_is_watertight_override', mesh.is_watertight):
         try:
             current = _trimesh_to_manifold(mesh)
             if current.num_vert() == 0 or current.status() != 0:
@@ -217,7 +217,7 @@ def cut_mesh_by_planes(
                         length = np.linalg.norm(vec)
                         if length > 0.1:
                             # Raio 40mm é suficiente para cobrir asas/rabos finos
-                            cyl = trimesh.creation.cylinder(radius=40.0, height=length + 80.0)
+                            cyl = trimesh.creation.cylinder(radius=25.0, height=length + 50.0)
                             # Alinhar o cilindro com o vetor
                             z_axis = np.array([0, 0, 1])
                             dir_vec = vec / length

@@ -265,7 +265,11 @@ def close_color_piece(
             pitch = max(0.4, max_extent / 100.0)
             logger.info(f"Voxelizando com pitch={pitch:.2f}mm para max_extent={max_extent:.1f}mm")
             
-            mesh = trimesh.voxel.creation.voxelize(mesh, pitch=pitch).marching_cubes
+            v = trimesh.voxel.creation.voxelize(mesh, pitch=pitch)
+            mc_mesh = v.marching_cubes
+            mc_mesh.apply_transform(v.transform)
+            mesh = mc_mesh
+            
             try:
                 trimesh.repair.fix_normals(mesh)
                 trimesh.repair.fix_winding(mesh)
@@ -275,10 +279,11 @@ def close_color_piece(
                 pass
             
             # Voxel marching cubes generate mathematically closed surfaces.
-            # If trimesh strictness disagrees, we bypass it for manifold3d.
-            mesh.is_watertight = True
+            # We can't set mesh.is_watertight = True because it's a computed property,
+            # but we can monkey-patch the property for this instance or just set a flag.
+            mesh._is_watertight_override = True
             
-            logger.info(f"Voxel remesh concluiu. Watertight = {mesh.is_watertight}")
+            logger.info(f"Voxel remesh concluiu. Watertight real = {mesh.is_watertight}")
         except Exception as e:
             logger.error(f"Erro no voxel remesh: {e}")
 
