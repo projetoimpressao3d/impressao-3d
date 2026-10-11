@@ -439,8 +439,7 @@ async def _run_subdivide_task(
                 needs_watertight = (p is target_piece)
                 p.mesh = close_color_piece(
                     p.mesh, 
-                    method=payload.cap_method,
-                    enable_voxel_fallback=needs_watertight
+                    method=payload.cap_method
                 )
                 p.is_watertight = p.mesh.is_watertight
 
@@ -628,4 +627,6 @@ async def _run_subdivide_task(
         _TASKS[task_id] = {"status": "failed", "error": str(exc)}
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+
+
 

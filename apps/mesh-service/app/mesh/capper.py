@@ -129,7 +129,12 @@ def cap_open_mesh(mesh: trimesh.Trimesh, method: str = "earcut", min_loop_length
         pass
     return capped
 
-def close_color_piece(mesh: trimesh.Trimesh, method: str = "earcut") -> trimesh.Trimesh:
+def close_color_piece(
+    mesh: trimesh.Trimesh,
+    method: str = "earcut",
+    enable_voxel_fallback: bool = False,
+    **kwargs,
+) -> trimesh.Trimesh:
     mesh = trimesh.Trimesh(vertices=mesh.vertices, faces=mesh.faces, process=True)
     if mesh.is_watertight:
         return mesh
