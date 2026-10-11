@@ -162,16 +162,16 @@ def cut_mesh_by_planes(
     # Converter malha inicial para manifold3d e verificar validade
     current: Manifold | None = None
     
-    if getattr(mesh, '_is_watertight_override', mesh.is_watertight):
-        try:
-            current = _trimesh_to_manifold(mesh)
-            if current.num_vert() == 0 or current.status() != 0:
-                current = None
-        except Exception:
+    try:
+        current = _trimesh_to_manifold(mesh)
+        if current.num_vert() == 0 or current.status() != 0:
             current = None
+    except Exception as e:
+        logger.warning(f"Conversão para Manifold falhou: {e}")
+        current = None
 
     if current is None:
-        logger.info("Malha de entrada possui micro-arestas abertas; utilizando fatiador robusto trimesh")
+        logger.warning("Malha de entrada rejeitada pelo manifold3d; utilizando fatiador robusto trimesh")
         return _cut_mesh_by_planes_trimesh(
             mesh, planes, generate_connectors, connector_tolerance_mm, connector_pin_shape
         )
@@ -292,10 +292,22 @@ def cut_mesh_by_planes(
             else:
                 top, bottom = current.split_by_plane(n.tolist(), origin_offset)
         except Exception as exc:
-            raise RuntimeError(
-                f"manifold3d falhou no corte {i + 1}/{len(planes)}: {exc}. "
-                "Certifique-se de que o plano intersecta a geometria e a malha é válida."
-            ) from exc
+            logger.warning(f"manifold3d falhou no corte {i + 1}/{len(planes)}: {exc}. Fazendo fallback para fatiador trimesh para os planos restantes.")
+            trimesh_result = []
+            for m in accumulated:
+                try:
+                    trimesh_result.append(_clean_piece_shards(_manifold_to_trimesh(m)))
+                except Exception:
+                    pass
+            try:
+                current_tm = _manifold_to_trimesh(current)
+                remaining_planes = planes[i:]
+                trimesh_rest = _cut_mesh_by_planes_trimesh(current_tm, remaining_planes, generate_connectors, connector_tolerance_mm, connector_pin_shape)
+                trimesh_result.extend(trimesh_rest)
+            except Exception as inner_exc:
+                logger.error(f"Fallback trimesh falhou: {inner_exc}")
+                return [mesh]
+            return trimesh_result
 
         if generate_connectors:
             try:
@@ -323,9 +335,8 @@ def cut_mesh_by_planes(
         try:
             piece = _manifold_to_trimesh(m)
         except Exception as exc:
-            raise RuntimeError(
-                f"Falha ao converter peça {i} de manifold3d de volta para trimesh: {exc}"
-            ) from exc
+            logger.warning(f"Falha ao converter peca {i} de manifold3d de volta para trimesh: {exc}")
+            continue
 
         if len(piece.vertices) == 0 or len(piece.faces) == 0:
             logger.warning("Peça %d ficou vazia após o corte — descartada", i)
@@ -350,3 +361,6 @@ def cut_mesh_by_planes(
         )
 
     return result
+
+
+
