@@ -7,6 +7,8 @@ Endpoints:
 """
 from __future__ import annotations
 
+import io
+import json
 import logging
 import tempfile
 from pathlib import Path
@@ -24,7 +26,13 @@ from app.mesh.threemf_writer import write_plate_3mf_bytes
 from app.mesh.skeleton import suggest_structural_cuts
 from app.mesh.general_splitter import suggest_general_split
 from app.mesh.cutter import cut_mesh_by_planes, CutPlaneInput
-from app.storage import create_download_url, download_to_tempfile, upload_bytes, sanitize_storage_key
+from app.storage import (
+    create_download_url,
+    download_to_tempfile,
+    upload_bytes,
+    download_bytes_or_none,
+    sanitize_storage_key,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/color-split", tags=["color-split"])
@@ -341,6 +349,18 @@ async def split_model_by_color(
         upload_bytes(supabase, unified_path, unified_3mf_bytes, content_type="model/3mf")
         unified_url = create_download_url(supabase, unified_path, expires_in=3600)
 
+        # Inicializar manifesto de sessão de corte cumulativo
+        manifest_path = f"pieces/{payload.user_id}/{model_id}/session_manifest.json"
+        try:
+            upload_bytes(
+                supabase,
+                manifest_path,
+                json.dumps({"extruders": {}}).encode("utf-8"),
+                content_type="application/json",
+            )
+        except Exception as exc:
+            logger.warning("Falha ao inicializar session_manifest.json: %s", exc)
+
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
@@ -457,24 +477,74 @@ async def _run_subdivide_task(
             if not sub_meshes:
                 raise RuntimeError("A subdivisão não gerou peças válidas.")
 
-            # 6. Reunir TODAS as peças (sub-peças da cor cortada + outras cores intactas)
+            # 6. Carregar manifesto de sessão cumulativa (se existir)
+            manifest_path = f"pieces/{payload.user_id}/{model_id}/session_manifest.json"
+            manifest: dict[str, dict] = {"extruders": {}}
+            manifest_raw = download_bytes_or_none(supabase, manifest_path)
+            if manifest_raw:
+                try:
+                    loaded_m = json.loads(manifest_raw.decode("utf-8"))
+                    if isinstance(loaded_m, dict) and "extruders" in loaded_m and isinstance(loaded_m["extruders"], dict):
+                        manifest = loaded_m
+                except Exception as m_err:
+                    logger.warning("Erro ao ler session_manifest.json: %s", m_err)
+
+            target_ext_num = target_piece.extruder_index + 1
+
+            # 7. Reunir TODAS as peças (sub-peças acumuladas + novas sub-peças + outras cores intactas)
             all_pieces_meshes: list[tuple[trimesh.Trimesh, str, int, str, bool]] = []
 
-            # Sub-peças da cor cortada
-            for i, sm in enumerate(sub_meshes):
-                lbl = sm.metadata.get("label", f"Parte {i+1}")
-                sm_processed = _center_and_ground_mesh(sm) if payload.snap_to_floor else sm
-                all_pieces_meshes.append((
-                    sm_processed,
-                    target_piece.filament.color_hex,
-                    target_piece.extruder_index + 1,
-                    f"Extruder {target_piece.extruder_index + 1} - {lbl}",
-                    True,
-                ))
-
-            # Outras cores
             for p in split_result.pieces:
-                if p is not target_piece:
+                p_ext_num = p.extruder_index + 1
+                if p is target_piece:
+                    # Adiciona as novas sub-peças da cor recém cortada
+                    for i, sm in enumerate(sub_meshes):
+                        lbl = sm.metadata.get("label", f"Parte {i+1}")
+                        sm_processed = _center_and_ground_mesh(sm) if payload.snap_to_floor else sm
+                        all_pieces_meshes.append((
+                            sm_processed,
+                            target_piece.filament.color_hex,
+                            target_ext_num,
+                            f"Extruder {target_ext_num} - {lbl}",
+                            True,
+                        ))
+                elif str(p_ext_num) in manifest.get("extruders", {}):
+                    # Extruder já subdividido em corte anterior da mesma sessão!
+                    saved_items = manifest["extruders"][str(p_ext_num)]
+                    loaded_any = False
+                    for s_item in saved_items:
+                        try:
+                            s_bytes = download_bytes_or_none(supabase, s_item["storage_path"])
+                            if s_bytes:
+                                loaded = trimesh.load(io.BytesIO(s_bytes), file_type="3mf")
+                                if isinstance(loaded, trimesh.Scene):
+                                    s_mesh = trimesh.util.concatenate(list(loaded.geometry.values())) if loaded.geometry else trimesh.Trimesh()
+                                else:
+                                    s_mesh = loaded
+                                if payload.snap_to_floor:
+                                    s_mesh = _center_and_ground_mesh(s_mesh)
+                                all_pieces_meshes.append((
+                                    s_mesh,
+                                    s_item.get("color_hex", p.filament.color_hex),
+                                    p_ext_num,
+                                    s_item.get("label", f"Extruder {p_ext_num}"),
+                                    True,
+                                ))
+                                loaded_any = True
+                        except Exception as load_err:
+                            logger.warning("Falha ao carregar subpeça salva para extruder %d: %s", p_ext_num, load_err)
+                    if not loaded_any:
+                        # Fallback se não conseguiu baixar os arquivos anteriores
+                        p_mesh = _center_and_ground_mesh(p.mesh) if payload.snap_to_floor else p.mesh
+                        all_pieces_meshes.append((
+                            p_mesh,
+                            p.filament.color_hex,
+                            p_ext_num,
+                            f"Extruder {p_ext_num}",
+                            False,
+                        ))
+                else:
+                    # Extruder intacto, não subdividido
                     if payload.snap_to_floor:
                         sub_list = p.sub_meshes if p.sub_meshes else [p.mesh]
                         if len(sub_list) > 1:
@@ -491,12 +561,12 @@ async def _run_subdivide_task(
                     all_pieces_meshes.append((
                         p_mesh,
                         p.filament.color_hex,
-                        p.extruder_index + 1,
-                        f"Extruder {p.extruder_index + 1}",
+                        p_ext_num,
+                        f"Extruder {p_ext_num}",
                         False,
                     ))
 
-            # 8. Gerar arquivo .3MF UNIFICADO com TODAS as peças e TODAS as cores
+            # 8. Gerar arquivo .3MF UNIFICADO com TODAS as peças e TODAS as cores acumuladas
             unified_3mf_bytes = write_plate_3mf_bytes(
                 meshes=[m for m, _, _, _, _ in all_pieces_meshes],
                 colors=[c for _, c, _, _, _ in all_pieces_meshes],
@@ -509,9 +579,10 @@ async def _run_subdivide_task(
             upload_bytes(supabase, unified_storage_path, unified_3mf_bytes, content_type="model/3mf")
             unified_url = create_download_url(supabase, unified_storage_path, expires_in=3600)
 
-            # 9. Gerar arquivos individuais por peça e verificar se cabem na mesa
+            # 9. Gerar arquivos individuais por peça e atualizar manifesto
             plates_output: list[PlateOutput] = []
             oversized_count = 0
+            manifest_extruders_update: dict[str, list[dict]] = {}
 
             for idx, (mesh_obj, color_hex, ext_num, label, is_sub) in enumerate(all_pieces_meshes):
                 extents = [round(float(e), 1) for e in mesh_obj.extents]
@@ -537,6 +608,14 @@ async def _run_subdivide_task(
                 upload_bytes(supabase, indiv_path, indiv_bytes, content_type="model/3mf")
                 indiv_url = create_download_url(supabase, indiv_path, expires_in=3600)
 
+                if is_sub:
+                    manifest_extruders_update.setdefault(str(ext_num), []).append({
+                        "storage_path": indiv_path,
+                        "color_hex": color_hex,
+                        "label": label,
+                        "extents_mm": extents,
+                    })
+
                 plates_output.append(PlateOutput(
                     plate_number=idx + 1,
                     extruder_number=ext_num,
@@ -548,6 +627,19 @@ async def _run_subdivide_task(
                     label=label,
                     is_subdivided=is_sub,
                 ))
+
+            # Salvar manifesto atualizado no Storage
+            manifest["extruders"].update(manifest_extruders_update)
+            try:
+                upload_bytes(
+                    supabase,
+                    manifest_path,
+                    json.dumps(manifest).encode("utf-8"),
+                    content_type="application/json",
+                )
+                logger.info("Manifesto de sessão atualizado: %s", list(manifest["extruders"].keys()))
+            except Exception as m_up_err:
+                logger.warning("Falha ao salvar session_manifest.json: %s", m_up_err)
 
             logger.info(
                 "Subdivisão concluída para modelo %s: %d peças geradas, %d oversized",

@@ -107,8 +107,16 @@ def _cut_mesh_by_planes_trimesh(
         o = np.asarray(plane.origin, dtype=np.float64)
 
         try:
-            top = trimesh.intersections.slice_mesh_plane(current, plane_normal=n, plane_origin=o, cap=True)
-            bottom = trimesh.intersections.slice_mesh_plane(current, plane_normal=-n, plane_origin=o, cap=True)
+            try:
+                top = trimesh.intersections.slice_mesh_plane(current, plane_normal=n, plane_origin=o, cap=True)
+                bottom = trimesh.intersections.slice_mesh_plane(current, plane_normal=-n, plane_origin=o, cap=True)
+            except Exception as cap_err:
+                logger.warning("slice_mesh_plane com cap=True falhou (%s), tentando com cap=False...", cap_err)
+                top = trimesh.intersections.slice_mesh_plane(current, plane_normal=n, plane_origin=o, cap=False)
+                bottom = trimesh.intersections.slice_mesh_plane(current, plane_normal=-n, plane_origin=o, cap=False)
+                from app.mesh.capper import close_color_piece
+                top = close_color_piece(top, method="earcut")
+                bottom = close_color_piece(bottom, method="earcut")
 
             if len(top.vertices) > 0 and len(bottom.vertices) > 0:
                 if generate_connectors and top.is_watertight and bottom.is_watertight:

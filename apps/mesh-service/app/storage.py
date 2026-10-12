@@ -93,3 +93,15 @@ def upload_bytes(
     )
     logger.info("Upload concluído: %s (%d bytes)", clean_path, len(data))
 
+
+def download_bytes_or_none(supabase: Client, storage_path: str) -> bytes | None:
+    """Baixa bytes de um arquivo do Supabase Storage ou retorna None se não existir."""
+    try:
+        clean_path = sanitize_storage_key(storage_path)
+        data = supabase.storage.from_("models").download(clean_path)
+        return data
+    except Exception as exc:
+        logger.debug("download_bytes_or_none: %s não encontrado ou erro: %s", storage_path, exc)
+        return None
+
+
