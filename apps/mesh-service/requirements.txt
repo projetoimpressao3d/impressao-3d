@@ -20,6 +20,8 @@ scikit-image>=0.22.0
 skeletor>=1.7.0
 # manifold3d: corte linear de malhas (carregado sob demanda via lazy import)
 manifold3d>=2.5.0
+shapely>=2.0.0
+fast_simplification>=0.1.7
 
 httpx>=0.28.0
 # Cliente Supabase para atualizar models via service_role

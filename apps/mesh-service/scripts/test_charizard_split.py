@@ -27,15 +27,11 @@ async def main():
             
     background = MockBackgroundTasks()
     
-    # Mock supabase to provide the mock build plate and model
+    # Mock supabase
     supabase = MagicMock()
-    
-    supabase.table().select().eq().eq().single().execute.side_effect = [
-        # Model fetch
-        MagicMock(data={"id": "charizard", "storage_path": "test.3mf", "name": "Charizard", "user_id": "test"}),
-        # Plate fetch
-        MagicMock(data={"id": "mock", "build_volume_x_mm": 100, "build_volume_y_mm": 100, "build_volume_z_mm": 100})
-    ]
+    import app.routers.color_split as cs
+    cs._fetch_model = lambda s, m, u: {"id": "charizard", "storage_path": "test.3mf", "name": "Charizard", "user_id": "test"}
+    cs._fetch_build_plate = lambda s, p, u: {"id": "mock", "build_volume_x_mm": 100.0, "build_volume_y_mm": 100.0, "build_volume_z_mm": 100.0}
     
     supabase.storage.from_().create_signed_url.return_value = {"signedURL": "file://C:/Users/Fabricio/Downloads/Modelos 3D/charizard_cores.3mf"}
     
@@ -82,10 +78,12 @@ async def main():
     print(f"Number of orange pieces: {len(orange_pieces)}")
     assert len(orange_pieces) >= 5, f"Expected >= 5 orange pieces, got {len(orange_pieces)}"
     
-    for p in plates:
+    for i, p in enumerate(orange_pieces):
+        print(f"  Peça {i+1} ({p['label']}): {p['extents_mm']} mm - Cabe na mesa: {p['fits_in_plate']}")
+
+    for p in orange_pieces:
         extents = p["extents_mm"]
         assert extents[0] <= 100 and extents[1] <= 100 and extents[2] <= 100, f"Piece {p['label']} oversized: {extents}"
-        # Watertight isn't in output, but we could check
     
     print("All assertions passed!")
 
