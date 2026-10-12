@@ -47,6 +47,7 @@ interface ColorSplitPanelProps {
   onReset?: () => void;
   selectedColorPlateIdx?: number | "all";
   onSelectColorPlateIdx?: (idx: number | "all") => void;
+  onSwitchToLinearMode?: () => void;
 }
 
 
@@ -104,6 +105,7 @@ export function ColorSplitPanel({
   onReset,
   selectedColorPlateIdx,
   onSelectColorPlateIdx,
+  onSwitchToLinearMode,
 }: ColorSplitPanelProps) {
 
   const [colorInfo, setColorInfo] = useState<{
@@ -280,11 +282,6 @@ export function ColorSplitPanel({
 
   // ── Painel inline de configuração de subdivisão ──────────────────────────
   if (subdividingPlate) {
-    const modeLabels: Record<SubdivideMode, string> = {
-      character: "🦴 Divisão Anatômica (Character Split)",
-      general: "📐 Divisão Geral Auto-Fit (BSP)",
-    };
-
     return (
       <div className="mt-4 space-y-4">
         <div className="rounded-xl border border-amber-700 bg-amber-950/30 px-4 py-3">
@@ -301,94 +298,22 @@ export function ColorSplitPanel({
             <ColorSwatch hex={subdividingPlate.color_hex} />
           </div>
           <p className="mt-2 text-[11px] text-amber-400">
-            Todas as cores do modelo serão preservadas. Somente a peça selecionada será fatiada.
-            Ao final, você poderá baixar um arquivo .3mf unificado com todas as divisões.
+            Esta peça será dividida de forma balanceada pelo gargalo central para caber perfeitamente na sua mesa de impressão. Todas as outras cores do modelo continuam preservadas.
           </p>
         </div>
 
-        {/* Seleção do modo */}
-        <div className="rounded-xl border border-gray-700 bg-gray-800/60 p-3 space-y-2">
-          <p className="text-xs font-semibold text-gray-300">Modo de divisão</p>
-          <div className="grid grid-cols-2 gap-2">
-            {(["character", "general"] as SubdivideMode[]).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setSubdivideConfig((c) => ({ ...c, mode: m }))}
-                className={`rounded-lg px-3 py-2.5 text-xs font-medium text-left transition-colors ${
-                  subdivideConfig.mode === m
-                    ? m === "character"
-                      ? "bg-emerald-700 text-white"
-                      : "bg-violet-700 text-white"
-                    : "bg-gray-700 text-gray-400 hover:bg-gray-600"
-                }`}
-              >
-                {modeLabels[m]}
-              </button>
-            ))}
+        {/* Informação do algoritmo */}
+        <div className="rounded-xl border border-emerald-800/50 bg-emerald-950/20 p-3 space-y-1.5">
+          <div className="flex items-center gap-2">
+            <span className="text-sm">⚖️</span>
+            <div>
+              <p className="text-xs font-semibold text-emerald-300">Bisseção Central Balanceada</p>
+              <p className="text-[10px] text-emerald-500">
+                O corte divide o modelo no ponto de menor seção transversal dentro da faixa central (35% a 65%), gerando metades funcionais e sem amputar pontas de membros.
+              </p>
+            </div>
           </div>
-          <p className="text-[10px] text-gray-500">
-            {subdivideConfig.mode === "character"
-              ? "Detecta membros anatômicos (asas, cauda, cabeça) e secciona nos gargalos articulares."
-              : "Decomposição BSP recursiva para formas arbitrárias, garantindo que cada peça caiba na mesa."}
-          </p>
         </div>
-
-        {/* Config: Character Split */}
-        {subdivideConfig.mode === "character" && (
-          <div className="rounded-xl border border-emerald-800/50 bg-emerald-950/20 p-3 space-y-2">
-            <div>
-              <label className="block text-[10px] font-semibold uppercase tracking-wider text-emerald-400 mb-1">
-                Template Anatômico
-              </label>
-              <select
-                value={subdivideConfig.characterTemplate}
-                onChange={(e) => setSubdivideConfig((c) => ({ ...c, characterTemplate: e.target.value }))}
-                className="w-full rounded-lg border border-emerald-700 bg-gray-800 px-2 py-1.5 text-xs text-white focus:border-emerald-500 focus:outline-none"
-              >
-                <option value="creature">🐉 Criatura Alada (Asas, Cauda, Cabeça)</option>
-                <option value="a">👤 Template A: 6 partes (Cabeça + Membros)</option>
-                <option value="b">👤 Template B: 5 partes</option>
-                <option value="d">👤 Template D: 4 partes com Cabeça</option>
-                <option value="f">🥋 Template F: 2 partes (Cintura)</option>
-                <option value="auto">✨ Detecção Automática</option>
-              </select>
-            </div>
-            <div>
-              <div className="flex items-center justify-between text-[11px] text-emerald-400">
-                <span>Sensibilidade de apêndices:</span>
-                <span className="font-mono font-semibold">{subdivideConfig.sensitivity}%</span>
-              </div>
-              <input
-                type="range"
-                min={1}
-                max={25}
-                value={subdivideConfig.sensitivity}
-                onChange={(e) => setSubdivideConfig((c) => ({ ...c, sensitivity: Number(e.target.value) }))}
-                className="w-full accent-emerald-500 mt-1"
-              />
-            </div>
-          </div>
-        )}
-
-        {/* Config: General Split */}
-        {subdivideConfig.mode === "general" && (
-          <div className="rounded-xl border border-violet-800/50 bg-violet-950/20 p-3 space-y-2">
-            <label className="block text-[10px] font-semibold uppercase tracking-wider text-violet-400 mb-1">
-              Granularidade
-            </label>
-            <select
-              value={subdivideConfig.generalGranularity}
-              onChange={(e) => setSubdivideConfig((c) => ({ ...c, generalGranularity: e.target.value }))}
-              className="w-full rounded-lg border border-violet-700 bg-gray-800 px-2 py-1.5 text-xs text-white focus:border-violet-500 focus:outline-none"
-            >
-              <option value="auto">🎯 Auto-Fit (Garante encaixe na mesa)</option>
-              <option value="low">⚡ Baixa (Mínimo de cortes)</option>
-              <option value="medium">⚖️ Média (Margem de segurança 10%)</option>
-              <option value="high">🧩 Alta (Peças menores modulares)</option>
-            </select>
-          </div>
-        )}
 
         {/* Config: Conectores */}
         <div className="rounded-xl border border-indigo-800/40 bg-indigo-950/20 p-3 space-y-2">
@@ -400,20 +325,20 @@ export function ColorSplitPanel({
               className="h-4 w-4 rounded border-indigo-700 text-indigo-500"
             />
             <span className="text-xs font-semibold text-indigo-300">
-              🧩 Conectores Mecânicos Macho/Fêmea (0.2mm folga)
+              🧩 Conectores Mecânicos Macho/Fêmea (0.2mm de folga)
             </span>
           </label>
           {subdivideConfig.generateConnectors && (
             <div className="flex items-center gap-2 pl-6">
-              <span className="text-[11px] text-indigo-400">Formato:</span>
+              <span className="text-[11px] text-indigo-400">Formato do pino:</span>
               <select
                 value={subdivideConfig.connectorPinShape}
                 onChange={(e) => setSubdivideConfig((c) => ({ ...c, connectorPinShape: e.target.value as "hex" | "triangle" | "cylinder" }))}
                 className="rounded border border-indigo-700 bg-gray-800 px-2 py-1 text-xs text-white focus:outline-none"
               >
                 <option value="hex">Hexagonal (Anti-rotação)</option>
-                <option value="triangle">Triangular</option>
                 <option value="cylinder">Cilíndrico</option>
+                <option value="triangle">Triangular</option>
               </select>
             </div>
           )}
@@ -561,23 +486,62 @@ export function ColorSplitPanel({
                 </p>
               </div>
 
-              <button
-                className="w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-60 transition-colors"
-                onClick={handleSplitByColor}
-                disabled={splitting || !selectedPlateId}
-              >
-                {splitting ? (
-                  <span className="flex items-center justify-center gap-2">
+              <div className="space-y-2.5">
+                <p className="text-xs font-semibold text-gray-300">Escolha o fluxo de produção:</p>
+                
+                {/* Opção 1: Separar por cor (1 bico) */}
+                <button
+                  type="button"
+                  className="w-full rounded-xl border border-emerald-600 bg-emerald-950/60 p-3 text-left transition-all hover:bg-emerald-900/60 hover:border-emerald-500 group shadow-sm disabled:opacity-60"
+                  onClick={handleSplitByColor}
+                  disabled={splitting || !selectedPlateId}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-emerald-300 group-hover:text-emerald-200 flex items-center gap-1.5">
+                      🎨 Separar Cores para Montagem
+                    </span>
+                    <span className="rounded bg-emerald-800/80 px-2 py-0.5 text-[10px] font-medium text-emerald-200">
+                      1 Bico / Sem AMS
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-emerald-400/90 mt-1 leading-snug">
+                    Separa cada cor do modelo em mesas individuais. Ideal para imprimir cada parte com um filamento diferente e montar/colar após a impressão.
+                  </p>
+                </button>
+
+                {/* Opção 2: Fatiar completo mantendo cores (AMS) */}
+                {onSwitchToLinearMode && (
+                  <button
+                    type="button"
+                    onClick={onSwitchToLinearMode}
+                    className="w-full rounded-xl border border-indigo-700 bg-indigo-950/40 p-3 text-left transition-all hover:bg-indigo-900/50 hover:border-indigo-500 group shadow-sm"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-indigo-300 group-hover:text-indigo-200 flex items-center gap-1.5">
+                        ✂️ Fatiar Modelo Completo
+                      </span>
+                      <span className="rounded bg-indigo-800/80 px-2 py-0.5 text-[10px] font-medium text-indigo-200">
+                        Multicor AMS
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-indigo-400/90 mt-1 leading-snug">
+                      Mantém a pintura colorida e divide o modelo inteiro em partes menores para caber na sua mesa de impressão.
+                    </p>
+                  </button>
+                )}
+              </div>
+
+              {splitting && (
+                <div className="rounded-xl border border-emerald-700 bg-emerald-950/50 p-3 text-center">
+                  <div className="flex items-center justify-center gap-2 text-xs font-semibold text-emerald-300">
                     <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
                     </svg>
-                    Separando pecas...
-                  </span>
-                ) : (
-                  "✂️ Separar Pecas por Cor"
-                )}
-              </button>
+                    Separando peças por cor e calculando mesas...
+                  </div>
+                </div>
+              )}
 
               <button
                 className="w-full rounded-lg px-4 py-2 text-xs text-gray-400 hover:text-gray-300 transition-colors"

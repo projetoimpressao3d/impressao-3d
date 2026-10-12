@@ -971,6 +971,7 @@ export function ModelViewer({
             setColorSplitResult(null);
             setSelectedColorPlateIdx("all");
           }}
+          onSwitchToLinearMode={() => setToolMode("linear")}
         />
 
       )}

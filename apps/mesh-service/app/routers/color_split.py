@@ -443,79 +443,26 @@ async def _run_subdivide_task(
                 )
                 p.is_watertight = p.mesh.is_watertight
 
-            # 5. Calcular planos de corte na peça alvo
-            cut_inputs: list[CutPlaneInput] = []
-            if payload.mode == "character":
-                try:
-                    struct_res = suggest_structural_cuts(
-                        target_piece.mesh,
-                        sensitivity=payload.structural_sensitivity,
-                        build_plate=[plate_x, plate_y, plate_z],
-                        template=payload.character_template,
-                    )
-                    for cp in struct_res.cut_planes:
-                        cut_inputs.append(
-                            CutPlaneInput(
-                                normal=cp.normal,
-                                origin=cp.origin,
-                                label=cp.label,
-                                bbox_min=cp.bbox_min,
-                                bbox_max=cp.bbox_max,
-                                branch_pts=cp.branch_pts,
-                            )
-                        )
-                except Exception as e:
-                    logger.warning("Falha ao sugerir cortes estruturais no modo character: %s", e)
-
-            # Fallback para general split se for o modo general ou se não encontrou cortes anatômicos
-            if not cut_inputs:
-                gran = payload.general_granularity if payload.general_granularity in ["auto", "low", "medium", "high"] else "auto"
-                try:
-                    gen_res = suggest_general_split(
-                        target_piece.mesh,
-                        plate_dims={"x": plate_x, "y": plate_y, "z": plate_z},
-                        granularity=gran,
-                    )
-                    for cp in gen_res.cut_planes:
-                        cut_inputs.append(
-                            CutPlaneInput(
-                                normal=cp.normal,
-                                origin=cp.origin,
-                                label=cp.label,
-                            )
-                        )
-                except Exception as e:
-                    logger.warning("Falha ao sugerir cortes gerais: %s", e)
-
-            if not cut_inputs:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Nenhum plano de corte foi gerado para esta peça nas dimensões da mesa informada.",
-                )
-
-            # 6. Executar cortes com conectores mecânicos na peça
-            sub_meshes = cut_mesh_by_planes(
+            # 5. Executar divisão balanceada para caber na mesa (Fit to Build Plate)
+            from app.mesh.fit_to_plate import fit_to_plate
+            sub_meshes = fit_to_plate(
                 target_piece.mesh,
-                cut_inputs,
+                plate_x,
+                plate_y,
+                plate_z,
                 generate_connectors=payload.generate_connectors,
                 connector_tolerance_mm=payload.connector_tolerance_mm,
                 connector_pin_shape=payload.connector_pin_shape,
             )
             if not sub_meshes:
-                raise RuntimeError("O corte não gerou peças.")
-                
-            from app.mesh.fit_to_plate import fit_to_plate
-            final_sub_meshes = []
-            for sm in sub_meshes:
-                final_sub_meshes.extend(fit_to_plate(sm, plate_x, plate_y, plate_z))
-            sub_meshes = final_sub_meshes
+                raise RuntimeError("A subdivisão não gerou peças válidas.")
 
-            # 7. Reunir TODAS as peças (sub-peças da cor cortada + outras cores intactas)
+            # 6. Reunir TODAS as peças (sub-peças da cor cortada + outras cores intactas)
             all_pieces_meshes: list[tuple[trimesh.Trimesh, str, int, str, bool]] = []
 
             # Sub-peças da cor cortada
             for i, sm in enumerate(sub_meshes):
-                lbl = cut_inputs[i].label if i < len(cut_inputs) else f"Parte {i+1}"
+                lbl = sm.metadata.get("label", f"Parte {i+1}")
                 sm_processed = _center_and_ground_mesh(sm) if payload.snap_to_floor else sm
                 all_pieces_meshes.append((
                     sm_processed,
