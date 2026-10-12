@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
@@ -61,6 +61,8 @@ export function ViewerScene({
   colorGroups = [],
   onGroupsParsed,
 }: ViewerSceneProps) {
+  const floorY = selectedPlate ? -(selectedPlate.build_volume_z_mm ?? 256) / 2 : 0;
+
   return (
     <Canvas
       camera={{ position: [0, 120, 280], fov: 45, near: 0.1, far: 100000 }}
@@ -72,7 +74,7 @@ export function ViewerScene({
       <directionalLight position={[200, 400, 300]} intensity={1.4} castShadow={false} />
       <directionalLight position={[-150, -100, -200]} intensity={0.3} />
       <hemisphereLight args={["#d0e8ff", "#1a1a2e", 0.5]} />
-      <gridHelper args={[2000, 200, "#334155", "#1e293b"]} />
+      <gridHelper position={[0, floorY, 0]} args={[2000, 200, "#334155", "#1e293b"]} />
 
       <Suspense fallback={null}>
         {colorPreviewMode && colorGroups.length > 0 ? (
@@ -107,10 +109,15 @@ export function ViewerScene({
         ) : (
           <>
             {format === "stl" ? (
-              <STLMesh url={url} onBboxChange={onBboxChange} />
+              <STLMesh
+                url={url}
+                selectedPlate={selectedPlate}
+                onBboxChange={onBboxChange}
+              />
             ) : (
               <ThreeMFColoredObject
                 url={url}
+                selectedPlate={selectedPlate}
                 onBboxChange={onBboxChange}
                 onGeometryReady={onGeometryReady}
                 onGroupsParsed={onGroupsParsed}

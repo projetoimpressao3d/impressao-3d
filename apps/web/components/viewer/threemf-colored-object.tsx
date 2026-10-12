@@ -38,15 +38,18 @@ export interface ColorGroup {
   isBase: boolean;
 }
 
+import type { BuildPlate } from "@/types/database";
+
 interface ParseResult {
   groups: ColorGroup[];
   bbox: THREE.Box3;
   centeredPositionsYUp: Float32Array; // posições do grupo base para o pai
-  method: "painted" | "multi_object";
+  method: "painted" | "multi_object" | "standard_multi";
 }
 
-interface ThreeMFColoredObjectProps {
+export interface ThreeMFColoredObjectProps {
   url: string;
+  selectedPlate?: BuildPlate | null;
   onBboxChange: (bbox: THREE.Box3) => void;
   onGeometryReady?: (positions: Float32Array) => void;
   onGroupsParsed?: (groups: ColorGroup[]) => void;
@@ -455,7 +458,9 @@ function parsePainted(
 
   // Bounding box global
   const bb = calcBBox(new Float32Array(rawVerts));
-  const [cx, cy, cz] = bb.center;
+  const cx = bb.center[0];
+  const cy = bb.center[1];
+  const mnZ = bb.min[2];
 
   const groups: ColorGroup[] = [];
   const sortedExts = Array.from(facesByExt.keys()).sort((a, b) => a - b);
@@ -466,9 +471,9 @@ function parsePainted(
     let p = 0;
     for (const [v1, v2, v3] of faces) {
       const i1 = v1 * 3, i2 = v2 * 3, i3 = v3 * 3;
-      pos[p++] = rawVerts[i1] - cx; pos[p++] = rawVerts[i1+1] - cy; pos[p++] = rawVerts[i1+2] - cz;
-      pos[p++] = rawVerts[i2] - cx; pos[p++] = rawVerts[i2+1] - cy; pos[p++] = rawVerts[i2+2] - cz;
-      pos[p++] = rawVerts[i3] - cx; pos[p++] = rawVerts[i3+1] - cy; pos[p++] = rawVerts[i3+2] - cz;
+      pos[p++] = rawVerts[i1] - cx; pos[p++] = rawVerts[i1+1] - cy; pos[p++] = rawVerts[i1+2] - mnZ;
+      pos[p++] = rawVerts[i2] - cx; pos[p++] = rawVerts[i2+1] - cy; pos[p++] = rawVerts[i2+2] - mnZ;
+      pos[p++] = rawVerts[i3] - cx; pos[p++] = rawVerts[i3+1] - cy; pos[p++] = rawVerts[i3+2] - mnZ;
     }
 
     // Decompor em componentes conexos (ilhas individuais: asas, garras, olhos, etc.)
@@ -482,9 +487,9 @@ function parsePainted(
       let pp = 0;
       for (const [v1, v2, v3] of allCompFaces) {
         const i1 = v1 * 3, i2 = v2 * 3, i3 = v3 * 3;
-        partPos[pp++] = rawVerts[i1] - cx; partPos[pp++] = rawVerts[i1+1] - cy; partPos[pp++] = rawVerts[i1+2] - cz;
-        partPos[pp++] = rawVerts[i2] - cx; partPos[pp++] = rawVerts[i2+1] - cy; partPos[pp++] = rawVerts[i2+2] - cz;
-        partPos[pp++] = rawVerts[i3] - cx; partPos[pp++] = rawVerts[i3+1] - cy; partPos[pp++] = rawVerts[i3+2] - cz;
+        partPos[pp++] = rawVerts[i1] - cx; partPos[pp++] = rawVerts[i1+1] - cy; partPos[pp++] = rawVerts[i1+2] - mnZ;
+        partPos[pp++] = rawVerts[i2] - cx; partPos[pp++] = rawVerts[i2+1] - cy; partPos[pp++] = rawVerts[i2+2] - mnZ;
+        partPos[pp++] = rawVerts[i3] - cx; partPos[pp++] = rawVerts[i3+1] - cy; partPos[pp++] = rawVerts[i3+2] - mnZ;
       }
       return buildGeoFromPositions(partPos);
     });
@@ -504,13 +509,13 @@ function parsePainted(
   const centeredYUp = new Float32Array(n);
   for (let i = 0; i < n; i += 3) {
     centeredYUp[i]     = rawVerts[i] - cx;
-    centeredYUp[i + 1] = -(rawVerts[i + 2] - cz);
-    centeredYUp[i + 2] = rawVerts[i + 1] - cy;
+    centeredYUp[i + 1] = rawVerts[i + 2] - mnZ;
+    centeredYUp[i + 2] = -(rawVerts[i + 1] - cy);
   }
 
   const bbox = new THREE.Box3(
-    new THREE.Vector3(bb.min[0] - cx, -(bb.max[2] - cz), bb.min[1] - cy),
-    new THREE.Vector3(bb.max[0] - cx, -(bb.min[2] - cz), bb.max[1] - cy),
+    new THREE.Vector3(bb.min[0] - cx, 0, bb.min[1] - cy),
+    new THREE.Vector3(bb.max[0] - cx, bb.max[2] - mnZ, bb.max[1] - cy),
   );
 
   return { groups, bbox, centeredPositionsYUp: centeredYUp, method: "painted" };
@@ -664,32 +669,30 @@ function parseMultiObject(
   }
   const cx = (mnX + mxX) / 2;
   const cy = (mnY + mxY) / 2;
-  const cz = (mnZ + mxZ) / 2;
 
-  // Construir ColorGroups com centralização global completa (viewer principal)
+  // Construir ColorGroups com centralização horizontal e Z na base (Z >= 0)
   const groups: ColorGroup[] = [];
   const sortedExts = Array.from(posByExt.keys()).sort((a, b) => a - b);
 
   for (const ext of sortedExts) {
     const rawPos = posByExt.get(ext)!;
 
-    // Geometria mesclada (viewer principal — coordenadas originais centradas)
+    // Geometria mesclada (viewer principal — coordenadas originais centradas horizontalmente, base no chão)
     const positions = new Float32Array(rawPos.length);
     for (let i = 0; i < rawPos.length; i += 3) {
       positions[i]   = rawPos[i]   - cx;
       positions[i+1] = rawPos[i+1] - cy;
-      positions[i+2] = rawPos[i+2] - cz;  // Z centrado — modelo aparece em posição original
+      positions[i+2] = rawPos[i+2] - mnZ;  // Z na base (>= 0)
     }
 
-    // Geometrias individuais por sub-objeto (preview — mesmo centroide global, sem snap)
-    // O snap Z individual será aplicado no ColorPiecesPreviewScene por parte
+    // Geometrias individuais por sub-objeto (preview)
     const rawParts = partsByExt.get(ext) ?? [];
     const partGeos: THREE.BufferGeometry[] = rawParts.map((rawPart) => {
       const partPos = new Float32Array(rawPart.length);
       for (let i = 0; i < rawPart.length; i += 3) {
         partPos[i]   = rawPart[i]   - cx;
         partPos[i+1] = rawPart[i+1] - cy;
-        partPos[i+2] = rawPart[i+2] - cz;  // mesmo centroide global
+        partPos[i+2] = rawPart[i+2] - mnZ;
       }
       return buildGeoFromPositions(partPos);
     });
@@ -713,13 +716,13 @@ function parseMultiObject(
   const centeredYUp = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
     centeredYUp[i*3]   = basePosAttr!.getX(i);
-    centeredYUp[i*3+1] = -basePosAttr!.getZ(i);  // rot -90X: 3MF Z → Three.js Y
-    centeredYUp[i*3+2] = basePosAttr!.getY(i);
+    centeredYUp[i*3+1] = basePosAttr!.getZ(i);  // rot -90X: 3MF Z → Three.js Y
+    centeredYUp[i*3+2] = -basePosAttr!.getY(i);
   }
 
   const bbox = new THREE.Box3(
-    new THREE.Vector3(mnX - cx, -(mxZ - cz), mnY - cy),
-    new THREE.Vector3(mxX - cx, -(mnZ - cz), mxY - cy),
+    new THREE.Vector3(mnX - cx, 0, mnY - cy),
+    new THREE.Vector3(mxX - cx, mxZ - mnZ, mxY - cy),
   );
 
   return { groups, bbox, centeredPositionsYUp: centeredYUp, method: "multi_object" };
@@ -776,7 +779,6 @@ function parseStandardMultiObject(objXml: string): ParseResult | null {
 
   const cx = (mnX + mxX) / 2;
   const cy = (mnY + mxY) / 2;
-  const cz = (mnZ + mxZ) / 2;
 
   const groups: ColorGroup[] = [];
   for (let i = 0; i < parts.length; i++) {
@@ -785,7 +787,7 @@ function parseStandardMultiObject(objXml: string): ParseResult | null {
     for (let j = 0; j < p.positions.length; j += 3) {
       centeredPos[j] = p.positions[j] - cx;
       centeredPos[j + 1] = p.positions[j + 1] - cy;
-      centeredPos[j + 2] = p.positions[j + 2] - cz;
+      centeredPos[j + 2] = p.positions[j + 2] - mnZ; // Grounded: lowest vertex at Z=0
     }
     const centeredGeo = buildGeoFromPositions(centeredPos);
     groups.push({
@@ -804,16 +806,16 @@ function parseStandardMultiObject(objXml: string): ParseResult | null {
   const centeredYUp = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
     centeredYUp[i * 3] = basePosAttr!.getX(i);
-    centeredYUp[i * 3 + 1] = -basePosAttr!.getZ(i);
-    centeredYUp[i * 3 + 2] = basePosAttr!.getY(i);
+    centeredYUp[i * 3 + 1] = basePosAttr!.getZ(i);
+    centeredYUp[i * 3 + 2] = -basePosAttr!.getY(i);
   }
 
   const bbox = new THREE.Box3(
-    new THREE.Vector3(mnX - cx, -(mxZ - cz), mnY - cy),
-    new THREE.Vector3(mxX - cx, -(mnZ - cz), mxY - cy),
+    new THREE.Vector3(mnX - cx, 0, mnY - cy),
+    new THREE.Vector3(mxX - cx, mxZ - mnZ, mxY - cy),
   );
 
-  return { groups, bbox, centeredPositionsYUp: centeredYUp, method: "multi_object" };
+  return { groups, bbox, centeredPositionsYUp: centeredYUp, method: "standard_multi" };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -972,6 +974,7 @@ function ColorMesh({
 
 export function ThreeMFColoredObject({
   url,
+  selectedPlate,
   onBboxChange,
   onGeometryReady,
   onGroupsParsed,
@@ -992,8 +995,10 @@ export function ThreeMFColoredObject({
   if (loading || !result) return null;
   if (error) { console.error("ThreeMFColoredObject:", error); return null; }
 
+  const floorY = selectedPlate ? -(selectedPlate.build_volume_z_mm ?? 256) / 2 : 0;
+
   return (
-    <group rotation={[-Math.PI / 2, 0, 0]}>
+    <group position={[0, floorY, 0]} rotation={[-Math.PI / 2, 0, 0]}>
       {result.groups.map((g, i) => (
         <ColorMesh key={`${g.extruderIndex}-${i}`} group={g} renderOrder={i} opacity={opacity} />
       ))}
