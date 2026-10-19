@@ -272,7 +272,7 @@ def segment_regions(mesh_m: m3d.Manifold, seg_pitch: float = 1.0, template: str 
         score = len(parts)
         if best is None or score > best[0]:
             best = (score, body, parts, rad)
-        if score >= 4:
+        if score >= 5:
             break
     if best is None:
         raise RegionSplitError("Segmentacao falhou: nao foi possivel encontrar um nucleo (tronco).")

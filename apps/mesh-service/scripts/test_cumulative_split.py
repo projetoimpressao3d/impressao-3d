@@ -117,9 +117,20 @@ async def test_cumulative():
     for p in ext2_step2:
         print(f"  {p['label']} - {p['extents_mm']} mm - Cabe: {p['fits_in_plate']}")
 
-    # Asserções críticas da Sessão Cumulativa:
+    # Asserções críticas da Sessão Cumulativa, Encaixe na Mesa e Ausência de Pontos Flutuantes:
     assert len(ext1_step2) >= 5, f"Esperado >= 5 peças para Extruder 1, obteve {len(ext1_step2)}"
     assert len(ext2_step2) == len(ext2_plates), f"Extruder 2 perdeu subpeças! Tinha {len(ext2_plates)}, agora tem {len(ext2_step2)}"
+
+    from app.mesh.connectors import split_spatially_disconnected
+
+    for p in ext1_step2 + ext2_step2:
+        assert p["fits_in_plate"], f"Peça {p['label']} excedeu a mesa: {p['extents_mm']}"
+        p_bytes = storage_store[p["storage_path"]]
+        p_loaded = trimesh.load(io.BytesIO(p_bytes), file_type="3mf")
+        p_mesh = trimesh.util.concatenate(list(p_loaded.geometry.values())) if isinstance(p_loaded, trimesh.Scene) else p_loaded
+        clusters = split_spatially_disconnected(p_mesh, gap_mm=1.2, min_speckle_faces=40)
+        print(f"  [Check Ilhas] {p['label']}: {len(clusters)} ilha(s) espacial(is), {len(p_mesh.faces)} faces")
+        assert len(clusters) == 1, f"Peça {p['label']} possui {len(clusters)} ilhas desconectadas (pontos flutuando)!"
 
     # Verificar manifesto final
     manifest_final = json.loads(storage_store[manifest_path].decode("utf-8"))

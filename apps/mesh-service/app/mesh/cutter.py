@@ -58,23 +58,31 @@ def _manifold_to_trimesh(m: "Manifold") -> trimesh.Trimesh:
     return trimesh.Trimesh(vertices=verts, faces=faces, process=False)
 
 
+from app.mesh.connectors import (
+    add_interlock_connector,
+    slice_and_cap_with_connectors,
+    split_spatially_disconnected,
+)
+
+
 def _clean_piece_shards(piece: trimesh.Trimesh, min_volume: float = 150.0) -> trimesh.Trimesh:
     """
-    Remove micro-estilhacos desconectados gerados por cortes de planos infinitos
-    em geometrias concavas distantes.
+    Remove micro-estilhaços e ilhas desconectadas flutuantes geradas por cortes planares,
+    preservando tampas planares e pinos de encaixe adjacentes (`gap_mm <= 1.2`).
     """
     try:
-        comps = piece.split(only_watertight=False)
-        if len(comps) <= 1:
+        clusters = split_spatially_disconnected(piece, gap_mm=1.2, min_speckle_faces=40)
+        if not clusters:
             return piece
+        if len(clusters) == 1:
+            return clusters[0]
 
-        # Filtrar componentes significativos (volume >= min_volume ou faces >= 150)
-        significant = [
-            c for c in comps
-            if (c.is_watertight and abs(c.volume) >= min_volume) or len(c.faces) >= 150
-        ]
-        if not significant:
-            return piece
+        main_faces = len(clusters[0].faces)
+        significant = [clusters[0]]
+        for c in clusters[1:]:
+            if len(c.faces) >= max(400, int(0.15 * main_faces)):
+                significant.append(c)
+
         if len(significant) == 1:
             return significant[0]
         return trimesh.util.concatenate(significant)
@@ -91,9 +99,8 @@ def _cut_mesh_by_planes_trimesh(
     connector_pin_shape: str = "hex",
 ) -> list[trimesh.Trimesh]:
     """
-    Fatiador planar robusto baseado em trimesh com capping poligonal estanque.
-    Utilizado como fallback transparente quando o modelo de entrada contém
-    arestas não-manifold que impossibilitam a conversão para manifold3d.
+    Fatiador planar robusto baseado em trimesh + Shapely com tampamento construtivo,
+    pinos de encaixe via `polylabel` (Círculo Máximo Inscrito) e reintegração de ilhas.
     """
     current = mesh.copy()
     accumulated: list[trimesh.Trimesh] = []
@@ -107,47 +114,28 @@ def _cut_mesh_by_planes_trimesh(
         o = np.asarray(plane.origin, dtype=np.float64)
 
         try:
-            try:
-                top = trimesh.intersections.slice_mesh_plane(current, plane_normal=n, plane_origin=o, cap=True)
-                bottom = trimesh.intersections.slice_mesh_plane(current, plane_normal=-n, plane_origin=o, cap=True)
-            except Exception as cap_err:
-                logger.warning("slice_mesh_plane com cap=True falhou (%s), tentando com cap=False...", cap_err)
-                top = trimesh.intersections.slice_mesh_plane(current, plane_normal=n, plane_origin=o, cap=False)
-                bottom = trimesh.intersections.slice_mesh_plane(current, plane_normal=-n, plane_origin=o, cap=False)
-                from app.mesh.capper import close_color_piece
-                top = close_color_piece(top, method="earcut")
-                bottom = close_color_piece(bottom, method="earcut")
+            top, bottom, pins = slice_and_cap_with_connectors(
+                current,
+                plane_origin=o,
+                plane_normal=n,
+                generate_connectors=generate_connectors,
+                tolerance_mm=connector_tolerance_mm,
+                pin_shape=connector_pin_shape,
+                reintegrate_grazed_islands=True,
+            )
 
             if len(top.vertices) > 0 and len(bottom.vertices) > 0:
-                if generate_connectors and top.is_watertight and bottom.is_watertight:
-                    try:
-                        m_top = _trimesh_to_manifold(top)
-                        m_bottom = _trimesh_to_manifold(bottom)
-                        if m_top.num_vert() > 0 and m_bottom.num_vert() > 0 and m_top.status() == 0 and m_bottom.status() == 0:
-                            m_top, m_bottom = add_interlock_connector(
-                                m_top,
-                                m_bottom,
-                                reference_mesh=current,
-                                plane_origin=plane.origin,
-                                plane_normal=n,
-                                tolerance_mm=connector_tolerance_mm,
-                                pin_shape=connector_pin_shape,
-                            )
-                            top = _manifold_to_trimesh(m_top)
-                            bottom = _manifold_to_trimesh(m_bottom)
-                    except Exception as conn_err:
-                        logger.warning("Falha ao gerar conector para o plano %d (%s): %s", i + 1, plane.label, conn_err)
-                elif generate_connectors:
-                    logger.warning("Conectores ignorados para plano %d: as fatias resultantes não são watertight", i + 1)
-
-                accumulated.append(top)
-                current = bottom
+                top_clean = _clean_piece_shards(top)
+                top_clean.metadata["pins_created"] = pins
+                accumulated.append(top_clean)
+                current = _clean_piece_shards(bottom)
+                current.metadata["pins_created"] = pins
             else:
                 logger.warning("Plano %d (%s) não seccionou a geometria em 2 partes válidas", i + 1, plane.label)
         except Exception as exc:
             logger.warning("Erro ao fatiar com trimesh no plano %d (%s): %s", i + 1, plane.label, exc)
 
-    accumulated.append(current)
+    accumulated.append(_clean_piece_shards(current))
     valid_pieces = [p for p in accumulated if len(p.vertices) > 0 and len(p.faces) > 0]
     if not valid_pieces:
         raise RuntimeError("Fatiador trimesh falhou: Corte resultou em 0 peças válidas.")
