@@ -17,20 +17,29 @@ export default async function ModelsPage() {
   }
 
   const admin = createAdminClient();
-  const [profileResult, platesResult, modelsResult] = await Promise.all([
-    admin.from("profiles").select("plan").eq("id", user.id).single(),
-    supabase
-      .from("build_plates")
-      .select("*")
-      .order("is_default", { ascending: false })
-      .order("created_at", { ascending: true }),
-    supabase
-      .from("models")
-      .select("*")
-      .order("created_at", { ascending: false }),
-  ]);
+  const [profileResult, platesResult, modelsResult, subscriptionResult] =
+    await Promise.all([
+      admin.from("profiles").select("plan").eq("id", user.id).single(),
+      supabase
+        .from("build_plates")
+        .select("*")
+        .order("is_default", { ascending: false })
+        .order("created_at", { ascending: true }),
+      supabase
+        .from("models")
+        .select("*")
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("subscriptions")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("status", "active")
+        .limit(1)
+        .single(),
+    ]);
 
   const plan = (profileResult.data?.plan ?? "free") as "free" | "pro";
+  const hasSubscription = !!subscriptionResult.data || plan === "pro";
   const initialPlates = (platesResult.data ?? []) as BuildPlate[];
   const initialModels = (modelsResult.data ?? []) as Model[];
 
@@ -38,6 +47,7 @@ export default async function ModelsPage() {
     <WorkspaceShell
       userEmail={user.email ?? ""}
       userPlan={plan}
+      hasSubscription={hasSubscription}
       initialPlates={initialPlates}
       initialModels={initialModels}
     />

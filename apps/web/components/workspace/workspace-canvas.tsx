@@ -3,9 +3,15 @@
 import React, { useState, useEffect, useCallback } from "react";
 import dynamic from "next/dynamic";
 import * as THREE from "three";
-import type { BuildPlate, Model } from "@/types/database";
+import type {
+  BuildPlate,
+  CutPlaneData,
+  Model,
+  PieceBboxStatus,
+} from "@/types/database";
 import type { ModelDimensions } from "@/components/viewer/model-viewer";
 import type { ColorGroup } from "@/components/viewer/threemf-colored-object";
+import type { ColorSplitResult } from "@/components/split/color-split-panel";
 
 const ViewerScene = dynamic(
   () =>
@@ -68,6 +74,40 @@ interface WorkspaceCanvasProps {
   selectedPlateId: string | null;
   onPlateChange: (id: string | null) => void;
   onOpenCreatePlate?: () => void;
+
+  // Botão flutuante inferior central: "Divisão Inteligente por Cores"
+  showSmartSplitButton?: boolean;
+  onClickSmartSplitButton?: () => void;
+
+  // Props de Divisão (Color Split / Linear Split)
+  active3DUrl?: string | null;
+  colorSplitResult?: ColorSplitResult | null;
+  selectedColorPlateIdx?: number | "all";
+  onSelectColorPlateIdx?: (idx: number | "all") => void;
+  colorPreviewMode?: boolean;
+  colorGroups?: ColorGroup[];
+  onGroupsParsed?: (groups: ColorGroup[]) => void;
+
+  splitMode?: boolean;
+  activeView?: "editor" | "preview";
+  onViewChange?: (view: "editor" | "preview") => void;
+  cutPlanes?: CutPlaneData[];
+  pieceBboxes?: PieceBboxStatus[];
+  selectedPlaneId?: string | null;
+  transformMode?: "translate" | "rotate";
+  onSelectPlane?: (id: string | null) => void;
+  onCutPlaneMoved?: (
+    id: string,
+    px: number,
+    py: number,
+    pz: number,
+    qx: number,
+    qy: number,
+    qz: number,
+    qw: number,
+  ) => void;
+  onDragEnd?: () => void;
+  onGeometryReady?: (positions: Float32Array) => void;
 }
 
 export function WorkspaceCanvas({
@@ -76,27 +116,49 @@ export function WorkspaceCanvas({
   selectedPlateId,
   onPlateChange,
   onOpenCreatePlate,
+  showSmartSplitButton = false,
+  onClickSmartSplitButton,
+  active3DUrl = null,
+  colorSplitResult = null,
+  selectedColorPlateIdx = "all",
+  onSelectColorPlateIdx,
+  colorPreviewMode = false,
+  colorGroups = [],
+  onGroupsParsed,
+  splitMode = false,
+  activeView = "editor",
+  onViewChange,
+  cutPlanes = [],
+  pieceBboxes = [],
+  selectedPlaneId = null,
+  transformMode = "translate",
+  onSelectPlane,
+  onCutPlaneMoved,
+  onDragEnd,
+  onGeometryReady,
 }: WorkspaceCanvasProps) {
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
   const [urlError, setUrlError] = useState<string | null>(null);
   const [computedDims, setComputedDims] = useState<ModelDimensions | null>(
     null,
   );
-  const [colorGroups, setColorGroups] = useState<ColorGroup[]>([]);
+  const [internalColorGroups, setInternalColorGroups] = useState<ColorGroup[]>(
+    [],
+  );
 
   useEffect(() => {
     if (!model) {
       setSignedUrl(null);
       setUrlError(null);
       setComputedDims(null);
-      setColorGroups([]);
+      setInternalColorGroups([]);
       return;
     }
 
     setSignedUrl(null);
     setUrlError(null);
     setComputedDims(null);
-    setColorGroups([]);
+    setInternalColorGroups([]);
 
     fetch(`/api/models/${model.id}/signed-url`)
       .then((r) => {
@@ -155,7 +217,22 @@ export function WorkspaceCanvas({
     );
   }
 
-  const effectiveDims: ModelDimensions | null =
+  const isIndividualPlateSelected =
+    selectedColorPlateIdx !== "all" &&
+    colorSplitResult !== null &&
+    colorSplitResult.plates[selectedColorPlateIdx as number] !== undefined;
+
+  const individualPlate = isIndividualPlateSelected
+    ? colorSplitResult!.plates[selectedColorPlateIdx as number]
+    : null;
+
+  const current3DUrl =
+    individualPlate?.download_url ?? active3DUrl ?? signedUrl;
+  const effectiveColorPreviewMode = isIndividualPlateSelected
+    ? false
+    : colorPreviewMode;
+
+  const baseDims: ModelDimensions | null =
     model.bounding_box_x_mm != null &&
     model.bounding_box_y_mm != null &&
     model.bounding_box_z_mm != null
@@ -166,6 +243,17 @@ export function WorkspaceCanvas({
         }
       : computedDims;
 
+  const effectiveDims: ModelDimensions | null =
+    individualPlate &&
+    individualPlate.extents_mm &&
+    individualPlate.extents_mm.length >= 3
+      ? {
+          x: Math.round(individualPlate.extents_mm[0] * 10) / 10,
+          y: Math.round(individualPlate.extents_mm[1] * 10) / 10,
+          z: Math.round(individualPlate.extents_mm[2] * 10) / 10,
+        }
+      : baseDims;
+
   const selectedPlate =
     buildPlates.find((p) => p.id === selectedPlateId) ?? null;
   const fit =
@@ -173,26 +261,191 @@ export function WorkspaceCanvas({
       ? checkFit(effectiveDims, selectedPlate)
       : null;
 
+  const effectiveGroups =
+    colorGroups.length > 0 ? colorGroups : internalColorGroups;
+
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
       {/* Cena 3D */}
       <div className="relative flex-1 overflow-hidden">
+        {/* Barra flutuante superior para seleção de mesas pós-separação por cor */}
+        {colorSplitResult && colorSplitResult.plates.length > 0 && (
+          <div className="absolute left-3 right-3 top-3 z-10 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-zinc-700/80 bg-zinc-900/90 p-2.5 shadow-xl backdrop-blur-md">
+            <div className="flex items-center gap-2">
+              <span className="flex items-center gap-1 text-xs font-semibold text-emerald-400">
+                <span>🖨️</span> Mesa Selecionada:
+              </span>
+              <select
+                value={
+                  selectedColorPlateIdx === "all"
+                    ? "all"
+                    : String(selectedColorPlateIdx)
+                }
+                onChange={(e) => {
+                  const val = e.target.value;
+                  onSelectColorPlateIdx?.(
+                    val === "all" ? "all" : parseInt(val, 10),
+                  );
+                }}
+                className="rounded-lg border border-zinc-700 bg-zinc-950 px-2.5 py-1 text-xs font-medium text-zinc-100 shadow-sm focus:border-emerald-500 focus:outline-none"
+              >
+                <option value="all">
+                  🌐 Todas as Mesas ({colorSplitResult.plates.length} mesas
+                  enfileiradas)
+                </option>
+                {colorSplitResult.plates.map((plate, idx) => {
+                  const dimsLabel =
+                    plate.extents_mm && plate.extents_mm.length >= 3
+                      ? ` (${plate.extents_mm[0].toFixed(0)}×${plate.extents_mm[1].toFixed(0)}×${plate.extents_mm[2].toFixed(0)}mm)`
+                      : "";
+                  return (
+                    <option key={idx} value={String(idx)}>
+                      Mesa {plate.plate_number}:{" "}
+                      {plate.label || `Cor #${plate.color_hex}`}
+                      {dimsLabel}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                disabled={
+                  selectedColorPlateIdx === "all" || selectedColorPlateIdx === 0
+                }
+                onClick={() => {
+                  if (
+                    typeof selectedColorPlateIdx === "number" &&
+                    selectedColorPlateIdx > 0
+                  ) {
+                    onSelectColorPlateIdx?.(selectedColorPlateIdx - 1);
+                  }
+                }}
+                className="rounded-lg border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-xs font-medium text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
+                title="Mesa anterior"
+              >
+                ◀ Ant
+              </button>
+              <button
+                type="button"
+                disabled={
+                  selectedColorPlateIdx === "all" ||
+                  selectedColorPlateIdx === colorSplitResult.plates.length - 1
+                }
+                onClick={() => {
+                  if (
+                    typeof selectedColorPlateIdx === "number" &&
+                    selectedColorPlateIdx < colorSplitResult.plates.length - 1
+                  ) {
+                    onSelectColorPlateIdx?.(selectedColorPlateIdx + 1);
+                  }
+                }}
+                className="rounded-lg border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-xs font-medium text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
+                title="Próxima mesa"
+              >
+                Próx ▶
+              </button>
+
+              {individualPlate && (
+                <a
+                  href={individualPlate.download_url}
+                  download={`mesa-${individualPlate.plate_number}.3mf`}
+                  className="ml-1 inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white shadow hover:bg-emerald-500"
+                  title="Baixar 3MF desta mesa individual"
+                >
+                  ⬇️ Baixar Mesa
+                </a>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Toggle flutuante de visualização rápida no topo do canvas (modo corte linear) */}
+        {splitMode && cutPlanes.length > 0 && (
+          <div className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded-xl border border-zinc-700/80 bg-zinc-900/90 p-1 shadow-lg backdrop-blur-md">
+            <button
+              type="button"
+              onClick={() => onViewChange?.("editor")}
+              className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition ${
+                activeView === "editor"
+                  ? "bg-emerald-600 text-white shadow-sm"
+                  : "text-zinc-300 hover:bg-zinc-800 hover:text-white"
+              }`}
+            >
+              ✏️ Editar Cortes
+            </button>
+            <button
+              type="button"
+              onClick={() => onViewChange?.("preview")}
+              className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition ${
+                activeView === "preview"
+                  ? "bg-emerald-600 text-white shadow-sm"
+                  : "text-zinc-300 hover:bg-zinc-800 hover:text-white"
+              }`}
+            >
+              🧩 Peças nas Mesas ({cutPlanes.length + 1})
+            </button>
+          </div>
+        )}
+
         {urlError ? (
           <div className="flex h-full items-center justify-center p-6 text-sm text-red-400">
             {urlError}
           </div>
-        ) : signedUrl ? (
+        ) : current3DUrl ? (
           <ViewerScene
-            url={signedUrl}
+            url={current3DUrl}
             format={model.format as "stl" | "3mf"}
             selectedPlate={selectedPlate}
             onBboxChange={handleBboxChange}
-            colorGroups={colorGroups}
-            onGroupsParsed={setColorGroups}
+            splitMode={splitMode}
+            activeView={activeView}
+            cutPlanes={cutPlanes}
+            pieceBboxes={pieceBboxes}
+            selectedPlaneId={selectedPlaneId}
+            transformMode={transformMode}
+            onSelectPlane={onSelectPlane}
+            onCutPlaneMoved={onCutPlaneMoved}
+            onDragEnd={onDragEnd}
+            onGeometryReady={onGeometryReady}
+            colorPreviewMode={effectiveColorPreviewMode}
+            colorGroups={effectiveGroups}
+            onGroupsParsed={(groups) => {
+              setInternalColorGroups(groups);
+              onGroupsParsed?.(groups);
+            }}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-zinc-400">
             Carregando modelo 3D…
+          </div>
+        )}
+
+        {/* Botão Flutuante Inferior Centralizado: "Divisão Inteligente por Cores" */}
+        {showSmartSplitButton && current3DUrl && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-5 z-20 flex justify-center px-4">
+            <button
+              type="button"
+              onClick={onClickSmartSplitButton}
+              className="pointer-events-auto flex items-center gap-2.5 rounded-2xl border border-emerald-400/50 bg-emerald-600 px-6 py-3 text-sm font-semibold text-white shadow-[0_8px_30px_rgba(16,185,129,0.35)] transition-all hover:scale-[1.02] hover:bg-emerald-500 active:scale-[0.99]"
+            >
+              <svg
+                className="h-4 w-4 shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z"
+                />
+              </svg>
+              <span>Divisão Inteligente por Cores</span>
+            </button>
           </div>
         )}
       </div>
