@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import dynamic from "next/dynamic";
-import type * as THREE from "three";
+import * as THREE from "three";
 import type { BuildPlate, Model } from "@/types/database";
 import type { ModelDimensions } from "@/components/viewer/model-viewer";
 import type { ColorGroup } from "@/components/viewer/threemf-colored-object";
@@ -112,7 +112,8 @@ export function WorkspaceCanvas({
   }, [model?.id]);
 
   const handleBboxChange = useCallback((bbox: THREE.Box3) => {
-    const size = bbox.getSize({ x: 0, y: 0, z: 0 } as THREE.Vector3);
+    const size = new THREE.Vector3();
+    bbox.getSize(size);
     setComputedDims({
       x: Math.abs(size.x),
       y: Math.abs(size.z), // Three.js Y é altura; Z é profundidade
