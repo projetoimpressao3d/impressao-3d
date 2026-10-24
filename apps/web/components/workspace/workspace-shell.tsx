@@ -3,14 +3,18 @@
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import type { BuildPlate } from "@/types/database";
 import { Badge } from "@/components/ui/badge";
 import { IconButton } from "@/components/ui/icon-button";
+import { BuildPlatesPropertiesPanel } from "./build-plates-properties-panel";
+import { BuildPlateModal } from "./build-plate-modal";
 
 export type SidebarTabId = "build-plate" | "models" | "smart-split";
 
 interface WorkspaceShellProps {
   userEmail: string;
   userPlan?: "free" | "pro";
+  initialPlates?: BuildPlate[];
 }
 
 const MENU_ITEMS: {
@@ -87,13 +91,47 @@ const MENU_ITEMS: {
 export function WorkspaceShell({
   userEmail,
   userPlan = "free",
+  initialPlates = [],
 }: WorkspaceShellProps) {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<SidebarTabId>("smart-split");
+  const [activeTab, setActiveTab] = useState<SidebarTabId>("build-plate");
   const [accountPopoverOpen, setAccountPopoverOpen] = useState(false);
+
+  // Estado das Mesas de Trabalho
+  const [plates, setPlates] = useState<BuildPlate[]>(initialPlates);
+  const [plateModalOpen, setPlateModalOpen] = useState(false);
+  const [editingPlate, setEditingPlate] = useState<BuildPlate | null>(null);
 
   const activeItem =
     MENU_ITEMS.find((item) => item.id === activeTab) ?? MENU_ITEMS[0];
+
+  async function refreshPlates() {
+    try {
+      const res = await fetch("/api/build-plates");
+      if (res.ok) {
+        const data = (await res.json()) as { plates?: BuildPlate[] };
+        if (data.plates) {
+          const sorted = [...data.plates].sort((a, b) =>
+            a.is_default === b.is_default ? 0 : a.is_default ? -1 : 1,
+          );
+          setPlates(sorted);
+        }
+      }
+    } catch {
+      // Fallback para router.refresh
+    }
+    router.refresh();
+  }
+
+  function handleOpenCreatePlate() {
+    setEditingPlate(null);
+    setPlateModalOpen(true);
+  }
+
+  function handleOpenEditPlate(plate: BuildPlate) {
+    setEditingPlate(plate);
+    setPlateModalOpen(true);
+  }
 
   async function handleLogout() {
     const supabase = createClient();
@@ -251,31 +289,48 @@ export function WorkspaceShell({
           <Badge variant="beta">Painel</Badge>
         </div>
 
-        {/* Conteúdo rolável do Painel de Propriedades */}
-        <div className="flex flex-1 flex-col overflow-y-auto p-4">
-          <div className="flex flex-1 flex-col items-center justify-center rounded-xl border-2 border-dashed border-zinc-800 bg-zinc-950/40 p-6 text-center">
-            <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full border border-zinc-800 bg-zinc-900 text-emerald-500">
-              {activeItem.icon}
+        {/* Conteúdo Dinâmico por Aba */}
+        {activeTab === "build-plate" ? (
+          <BuildPlatesPropertiesPanel
+            plates={plates}
+            selectedPlateId={editingPlate?.id}
+            onCreateNew={handleOpenCreatePlate}
+            onEditPlate={handleOpenEditPlate}
+            onDeletedPlate={() => {
+              if (editingPlate) {
+                setPlateModalOpen(false);
+                setEditingPlate(null);
+              }
+              void refreshPlates();
+            }}
+          />
+        ) : (
+          <>
+            <div className="flex flex-1 flex-col overflow-y-auto p-4">
+              <div className="flex flex-1 flex-col items-center justify-center rounded-xl border-2 border-dashed border-zinc-800 bg-zinc-950/40 p-6 text-center">
+                <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full border border-zinc-800 bg-zinc-900 text-emerald-500">
+                  {activeItem.icon}
+                </div>
+                <p className="text-sm font-medium text-zinc-300">
+                  {activeItem.label}
+                </p>
+                <p className="mt-1 text-xs text-zinc-500">
+                  As propriedades e controles desta etapa serão exibidos nesta
+                  coluna.
+                </p>
+              </div>
             </div>
-            <p className="text-sm font-medium text-zinc-300">
-              {activeItem.label}
-            </p>
-            <p className="mt-1 text-xs text-zinc-500">
-              As propriedades e controles desta etapa serão exibidos nesta
-              coluna.
-            </p>
-          </div>
-        </div>
 
-        {/* Rodapé fixo do Painel de Propriedades */}
-        <div className="mt-auto border-t border-zinc-800 p-4">
-          <button
-            type="button"
-            className="flex w-full items-center justify-center gap-2 rounded-xl border border-zinc-700 bg-zinc-800 py-3 text-sm font-medium text-emerald-500 transition-colors hover:bg-zinc-700"
-          >
-            <span>Ação Principal</span>
-          </button>
-        </div>
+            <div className="mt-auto border-t border-zinc-800 p-4">
+              <button
+                type="button"
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-zinc-700 bg-zinc-800 py-3 text-sm font-medium text-emerald-500 transition-colors hover:bg-zinc-700"
+              >
+                <span>Ação Principal</span>
+              </button>
+            </div>
+          </>
+        )}
       </section>
 
       {/* 3. Área Principal (Canvas 3D e Header) */}
@@ -304,7 +359,7 @@ export function WorkspaceShell({
           </div>
         </header>
 
-        {/* Área do Canvas 3D Central */}
+        {/* Área do Canvas 3D Central + Popup de Cadastro/Edição de Mesa */}
         <div className="relative flex flex-1 flex-col items-center justify-center bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-zinc-800 to-zinc-950">
           {/* Placeholder do Canvas 3D */}
           <div className="z-0 flex flex-col items-center justify-center text-center">
@@ -336,6 +391,22 @@ export function WorkspaceShell({
               ficarão permanentemente visíveis neste espaço.
             </p>
           </div>
+
+          {/* Popup de Cadastro / Edição de Mesa sobre a Área Principal */}
+          {plateModalOpen && (
+            <BuildPlateModal
+              existing={editingPlate}
+              onClose={() => {
+                setPlateModalOpen(false);
+                setEditingPlate(null);
+              }}
+              onSaved={() => {
+                setPlateModalOpen(false);
+                setEditingPlate(null);
+                void refreshPlates();
+              }}
+            />
+          )}
         </div>
       </main>
     </div>
