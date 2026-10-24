@@ -1,13 +1,14 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import type { BuildPlate } from "@/types/database";
+import type { BuildPlate, Model } from "@/types/database";
 import { Badge } from "@/components/ui/badge";
 import { IconButton } from "@/components/ui/icon-button";
 import { BuildPlatesPropertiesPanel } from "./build-plates-properties-panel";
 import { BuildPlateModal } from "./build-plate-modal";
+import { ModelsPropertiesPanel } from "./models-properties-panel";
 
 export type SidebarTabId = "build-plate" | "models" | "smart-split";
 
@@ -15,6 +16,7 @@ interface WorkspaceShellProps {
   userEmail: string;
   userPlan?: "free" | "pro";
   initialPlates?: BuildPlate[];
+  initialModels?: Model[];
 }
 
 const MENU_ITEMS: {
@@ -92,9 +94,10 @@ export function WorkspaceShell({
   userEmail,
   userPlan = "free",
   initialPlates = [],
+  initialModels = [],
 }: WorkspaceShellProps) {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<SidebarTabId>("build-plate");
+  const [activeTab, setActiveTab] = useState<SidebarTabId>("models");
   const [accountPopoverOpen, setAccountPopoverOpen] = useState(false);
 
   // Estado das Mesas de Trabalho
@@ -102,8 +105,49 @@ export function WorkspaceShell({
   const [plateModalOpen, setPlateModalOpen] = useState(false);
   const [editingPlate, setEditingPlate] = useState<BuildPlate | null>(null);
 
+  // Estado dos Modelos 3D
+  const [models, setModels] = useState<Model[]>(initialModels);
+  const [selectedModel, setSelectedModel] = useState<Model | null>(
+    initialModels[0] ?? null,
+  );
+
   const activeItem =
     MENU_ITEMS.find((item) => item.id === activeTab) ?? MENU_ITEMS[0];
+
+  const refreshModels = useCallback(async () => {
+    try {
+      const res = await fetch("/api/models");
+      if (res.ok) {
+        const data = (await res.json()) as { models?: Model[] };
+        if (data.models) {
+          setModels(data.models);
+          setSelectedModel((prev) => {
+            if (!prev) return data.models?.[0] ?? null;
+            return (
+              data.models?.find((m) => m.id === prev.id) ??
+              data.models?.[0] ??
+              null
+            );
+          });
+        }
+      }
+    } catch {
+      // Fallback silencioso
+    }
+    router.refresh();
+  }, [router]);
+
+  // Polling automático quando algum modelo estiver em análise ('pending')
+  const hasPendingModels = models.some(
+    (m) => m.printability_status === "pending",
+  );
+  useEffect(() => {
+    if (!hasPendingModels) return;
+    const interval = setInterval(() => {
+      void refreshModels();
+    }, 6000);
+    return () => clearInterval(interval);
+  }, [hasPendingModels, refreshModels]);
 
   async function refreshPlates() {
     try {
@@ -304,6 +348,16 @@ export function WorkspaceShell({
               void refreshPlates();
             }}
           />
+        ) : activeTab === "models" ? (
+          <ModelsPropertiesPanel
+            models={models}
+            selectedModelId={selectedModel?.id}
+            userPlan={userPlan}
+            onSelectModel={(model) => setSelectedModel(model)}
+            onModelsChanged={() => {
+              void refreshModels();
+            }}
+          />
         ) : (
           <>
             <div className="flex flex-1 flex-col overflow-y-auto p-4">
@@ -343,6 +397,14 @@ export function WorkspaceShell({
             <span className="font-semibold text-zinc-200">
               {activeItem.label}
             </span>
+            {selectedModel && (
+              <>
+                <span className="text-zinc-600">/</span>
+                <span className="truncate text-xs text-zinc-400">
+                  {selectedModel.name}
+                </span>
+              </>
+            )}
           </div>
 
           {/* Indicadores / Ações à direita */}
