@@ -9,6 +9,7 @@ import { IconButton } from "@/components/ui/icon-button";
 import { BuildPlatesPropertiesPanel } from "./build-plates-properties-panel";
 import { BuildPlateModal } from "./build-plate-modal";
 import { ModelsPropertiesPanel } from "./models-properties-panel";
+import { WorkspaceCanvas } from "./workspace-canvas";
 
 export type SidebarTabId = "build-plate" | "models" | "smart-split";
 
@@ -102,6 +103,12 @@ export function WorkspaceShell({
 
   // Estado das Mesas de Trabalho
   const [plates, setPlates] = useState<BuildPlate[]>(initialPlates);
+  const [selectedPlateId, setSelectedPlateId] = useState<string | null>(
+    () =>
+      initialPlates.find((p) => p.is_default)?.id ??
+      initialPlates[0]?.id ??
+      null,
+  );
   const [plateModalOpen, setPlateModalOpen] = useState(false);
   const [editingPlate, setEditingPlate] = useState<BuildPlate | null>(null);
 
@@ -159,6 +166,12 @@ export function WorkspaceShell({
             a.is_default === b.is_default ? 0 : a.is_default ? -1 : 1,
           );
           setPlates(sorted);
+          setSelectedPlateId((prev) => {
+            if (prev && sorted.some((p) => p.id === prev)) return prev;
+            return (
+              sorted.find((p) => p.is_default)?.id ?? sorted[0]?.id ?? null
+            );
+          });
         }
       }
     } catch {
@@ -422,37 +435,17 @@ export function WorkspaceShell({
         </header>
 
         {/* Área do Canvas 3D Central + Popup de Cadastro/Edição de Mesa */}
-        <div className="relative flex flex-1 flex-col items-center justify-center bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-zinc-800 to-zinc-950">
-          {/* Placeholder do Canvas 3D */}
-          <div className="z-0 flex flex-col items-center justify-center text-center">
-            <div className="mb-3 flex h-16 w-16 items-center justify-center rounded-2xl border border-zinc-700/60 bg-zinc-900/80 text-emerald-500 shadow-lg">
-              <svg
-                className="h-8 w-8"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={1.5}
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"
-                />
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"
-                />
-              </svg>
-            </div>
-            <p className="text-sm font-medium text-zinc-300">
-              Área Principal — Visualizador 3D
-            </p>
-            <p className="mt-1 max-w-sm text-xs text-zinc-500">
-              O Canvas 3D interativo e a visualização das mesas de trabalho
-              ficarão permanentemente visíveis neste espaço.
-            </p>
-          </div>
+        <div className="relative flex flex-1 flex-col items-center justify-center overflow-hidden bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-zinc-800 to-zinc-950">
+          <WorkspaceCanvas
+            model={selectedModel}
+            buildPlates={plates}
+            selectedPlateId={selectedPlateId}
+            onPlateChange={setSelectedPlateId}
+            onOpenCreatePlate={() => {
+              setActiveTab("build-plate");
+              handleOpenCreatePlate();
+            }}
+          />
 
           {/* Popup de Cadastro / Edição de Mesa sobre a Área Principal */}
           {plateModalOpen && (
