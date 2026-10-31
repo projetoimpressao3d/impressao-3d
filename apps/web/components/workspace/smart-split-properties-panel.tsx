@@ -25,7 +25,7 @@ function formatDimensions(model: Model): string | null {
   return `${x.toFixed(1)} × ${y.toFixed(1)} × ${z.toFixed(1)} mm`;
 }
 
-export type SmartSplitOption = "colors" | "linear" | null;
+export type SmartSplitOption = "colors_auto" | "colors_pins" | "linear" | null;
 
 interface SmartSplitPropertiesPanelProps {
   selectedModel: Model | null;
@@ -148,6 +148,7 @@ export function SmartSplitPropertiesPanel({
 
   const dims = formatDimensions(selectedModel);
   const is3mf = selectedModel.format === "3mf";
+  const selectedPlate = buildPlates.find((p) => p.id === selectedPlateId);
 
   return (
     <div className="flex flex-1 flex-col overflow-y-auto p-4">
@@ -182,40 +183,89 @@ export function SmartSplitPropertiesPanel({
         )}
       </div>
 
-      {/* Divisor */}
-      <div className="my-5 border-t border-zinc-800" />
+      {/* 2. Mesa de Trabalho (logo abaixo do modelo selecionado) */}
+      <div className="mt-3.5">
+        <div className="mb-1.5 flex items-center justify-between">
+          <label className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+            Mesa de Trabalho:
+          </label>
+          {selectedPlate && (
+            <span className="font-mono text-[10px] text-zinc-400">
+              {selectedPlate.build_volume_x_mm} × {selectedPlate.build_volume_y_mm} × {selectedPlate.build_volume_z_mm} mm
+            </span>
+          )}
+        </div>
+        <select
+          className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-200 outline-none transition-colors hover:border-zinc-700 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+          value={selectedPlateId ?? ""}
+          onChange={(e) => onPlateChange(e.target.value)}
+        >
+          {buildPlates.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name} ({p.build_volume_x_mm}×{p.build_volume_y_mm}×{p.build_volume_z_mm}mm)
+            </option>
+          ))}
+        </select>
+      </div>
 
-      {/* 2. Escolha como deseja dividir as peças */}
-      <p className="mb-3 text-center text-xs font-semibold uppercase tracking-wider text-zinc-300">
+      {/* Divisor */}
+      <div className="my-4 border-t border-zinc-800" />
+
+      {/* 3. Escolha como deseja dividir as peças */}
+      <p className="mb-2.5 text-center text-xs font-semibold uppercase tracking-wider text-zinc-300">
         Escolha como deseja dividir as peças:
       </p>
 
       <div className="flex flex-col gap-2.5">
-        {/* OPÇÃO 1: Divisão Inteligente por Cores */}
+        {/* OPÇÃO 1: Separação por cores */}
         <button
           type="button"
-          onClick={() => onSelectOption("colors")}
+          onClick={() => onSelectOption("colors_auto")}
           className={`group rounded-xl border p-3.5 text-left transition-all ${
-            selectedOption === "colors"
+            selectedOption === "colors_auto"
               ? "border-emerald-500 bg-emerald-950/30 shadow-md ring-1 ring-emerald-500/40"
               : "border-zinc-800 bg-zinc-950/60 hover:border-zinc-700 hover:bg-zinc-800/50"
           }`}
         >
           <div className="flex items-center justify-between">
             <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-400">
-              🎨 Separar por Cores
+              🎨 Separação por Cores
             </span>
             <span className="rounded border border-emerald-500/30 bg-emerald-950/60 px-2 py-0.5 text-[10px] font-medium text-emerald-300">
               1 Bico / Sem AMS
             </span>
           </div>
           <p className="mt-1 text-[11px] leading-snug text-zinc-400">
-            Separa cada cor do modelo 3MF em mesas individuais e subdivide peças
-            grandes com pinos de encaixe.
+            Identifica as cores do modelo 3MF, separa em mesas individuais e divide
+            automaticamente peças maiores que a mesa sem pinos.
           </p>
         </button>
 
-        {/* OPÇÃO 2: Corte Linear / Fatiar Modelo Completo */}
+        {/* OPÇÃO 2: Separação por cores + Pinos de encaixe */}
+        <button
+          type="button"
+          onClick={() => onSelectOption("colors_pins")}
+          className={`group rounded-xl border p-3.5 text-left transition-all ${
+            selectedOption === "colors_pins"
+              ? "border-emerald-500 bg-emerald-950/30 shadow-md ring-1 ring-emerald-500/40"
+              : "border-zinc-800 bg-zinc-950/60 hover:border-zinc-700 hover:bg-zinc-800/50"
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-400">
+              🧩 Separação por Cores + Pinos
+            </span>
+            <span className="rounded border border-emerald-500/40 bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
+              Diferencial
+            </span>
+          </div>
+          <p className="mt-1 text-[11px] leading-snug text-zinc-400">
+            Separa as cores, divide peças que excedem a mesa e insere pinos mecânicos
+            de encaixe (anti-rotação) nas juntas e interfaces.
+          </p>
+        </button>
+
+        {/* OPÇÃO 3: Corte Linear Completo */}
         <button
           type="button"
           onClick={() => onSelectOption("linear")}
@@ -226,7 +276,7 @@ export function SmartSplitPropertiesPanel({
           }`}
         >
           <div className="flex items-center justify-between">
-            <span className="flex items-center gap-1.5 text-xs font-bold text-zinc-100 group-hover:text-emerald-400">
+            <span className="flex items-center gap-1.5 text-xs font-bold text-zinc-200 group-hover:text-emerald-400">
               ✂️ Corte Linear Completo
             </span>
             <span className="rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
@@ -240,16 +290,19 @@ export function SmartSplitPropertiesPanel({
         </button>
       </div>
 
-      {/* 3. Conteúdo da opção escolhida */}
-      {selectedOption === "colors" && (
-        <div className="mt-4 border-t border-zinc-800 pt-2">
+      {/* 4. Conteúdo da opção escolhida */}
+      {(selectedOption === "colors_auto" || selectedOption === "colors_pins") && (
+        <div className="mt-4 border-t border-zinc-800 pt-3">
           <ColorSplitPanel
+            key={`${selectedModel.id}-${selectedOption}`}
             modelId={selectedModel.id}
             modelFormat={selectedModel.format}
             buildPlates={buildPlates}
             selectedPlateId={selectedPlateId}
             onPlateChange={onPlateChange}
             hasSubscription={hasSubscription}
+            generateConnectors={selectedOption === "colors_pins"}
+            autoStart={true}
             onShowPreview={hasColorGroups ? onToggleColorPreview : undefined}
             colorPreviewMode={colorPreviewMode}
             selectedColorPlateIdx={selectedColorPlateIdx}
@@ -262,7 +315,7 @@ export function SmartSplitPropertiesPanel({
       )}
 
       {selectedOption === "linear" && (
-        <div className="mt-4 border-t border-zinc-800 pt-2">
+        <div className="mt-4 border-t border-zinc-800 pt-3">
           {splitMode === "done" && executedPieces.length > 0 ? (
             <PieceDownload pieces={executedPieces} onClose={onCancel} />
           ) : (

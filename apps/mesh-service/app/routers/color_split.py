@@ -104,11 +104,17 @@ class TaskResponse(BaseModel):
 @router.get("/tasks/{task_id}", summary="Check task status")
 async def get_task_status(
     task_id: str,
+    user_id: str | None = None,
     _auth: None = Depends(verify_internal_token),
 ):
-    if task_id not in _TASKS:
+    task = _TASKS.get(task_id)
+    if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    return _TASKS[task_id]
+    owner = task.get("user_id")
+    if user_id is not None and owner is not None and owner != user_id:
+        # Não revela a existência de tarefas de outros usuários.
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {k: v for k, v in task.items() if k != "user_id"}
 
 class ColorSplitResponse(BaseModel):
     model_id: str
@@ -669,3 +675,224 @@ async def _run_subdivide_task(
 
 
 
+# ---------------------------------------------------------------------------
+# POST /color-split/{model_id}/auto-split — Separação automática (assíncrona)
+# ---------------------------------------------------------------------------
+
+
+class AutoColorSplitRequest(BaseModel):
+    user_id: str
+    build_plate_id: str
+    generate_connectors: bool = False
+    material: str = "PLA"
+    connector_pin_shape: str = "hex"
+    cap_method: str = "earcut"
+
+
+class AutoPlateOutput(PlateOutput):
+    part_labels: list[str] = []
+    has_connectors: bool = False
+
+
+class AutoColorSplitResponse(ColorSplitResponse):
+    plates: list[AutoPlateOutput]  # type: ignore[assignment]
+    filaments: list[FilamentInfoOut] = []
+    generate_connectors: bool = False
+    interface_pins: int = 0
+    subdivided_colors: list[int] = []
+    method: str = "painted"
+
+
+def _set_progress(task_id: str, progress: int, stage: str) -> None:
+    task = _TASKS.get(task_id)
+    if task is not None and task.get("status") == "processing":
+        task["progress"] = int(progress)
+        task["stage"] = stage
+
+
+@router.post(
+    "/{model_id}/auto-split",
+    response_model=TaskResponse,
+    summary="Separação automática por cores (com ou sem pinos de encaixe) — assíncrona",
+)
+async def auto_split_model_by_color(
+    model_id: str,
+    payload: AutoColorSplitRequest,
+    background_tasks: BackgroundTasks,
+    supabase: Client = Depends(get_supabase_client),
+    _auth: None = Depends(verify_internal_token),
+) -> TaskResponse:
+    """
+    Responde imediatamente com `task_id` (AGENTS.md seção 3 — operações longas são
+    assíncronas). O frontend acompanha `progress`/`stage` via GET /color-split/tasks/{id}.
+    """
+    model = _fetch_model(supabase, model_id, payload.user_id)
+    if not model:
+        raise HTTPException(status_code=404, detail="Modelo não encontrado.")
+    if not str(model.get("storage_path", "")).lower().endswith(".3mf"):
+        raise HTTPException(
+            status_code=422,
+            detail="A separação por cores requer um arquivo .3mf colorido.",
+        )
+    plate = _fetch_build_plate(supabase, payload.build_plate_id, payload.user_id)
+    if not plate:
+        raise HTTPException(status_code=404, detail="Mesa de trabalho não encontrada.")
+
+    task_id = str(uuid.uuid4())
+    _TASKS[task_id] = {
+        "status": "processing",
+        "progress": 2,
+        "stage": "Preparando o modelo...",
+        "user_id": payload.user_id,
+    }
+    background_tasks.add_task(
+        _run_auto_split_task,
+        task_id=task_id,
+        model=model,
+        plate=plate,
+        payload=payload,
+        supabase=supabase,
+    )
+    return TaskResponse(task_id=task_id)
+
+
+async def _run_auto_split_task(
+    task_id: str,
+    model: dict,
+    plate: dict,
+    payload: AutoColorSplitRequest,
+    supabase: Client,
+) -> None:
+    from app.mesh.auto_color_split import center_and_ground, run_auto_color_split
+    from app.mesh.connector_config import tolerance_for_material
+
+    model_id = str(model["id"])
+    plate_x = float(plate["build_volume_x_mm"])
+    plate_y = float(plate["build_volume_y_mm"])
+    plate_z = float(plate["build_volume_z_mm"])
+    tmp_path: str | None = None
+
+    try:
+        _set_progress(task_id, 5, "Baixando o modelo...")
+        url = create_download_url(supabase, model["storage_path"])
+        tmp_path = await download_to_tempfile(url, model["storage_path"])
+
+        def process() -> AutoColorSplitResponse:
+            _set_progress(task_id, 10, "Identificando as cores do modelo...")
+            split_result = parse_3mf_colors(tmp_path)
+            if not split_result.pieces:
+                raise ValueError(
+                    "Nenhuma cor de filamento detectada. Verifique se o modelo foi pintado "
+                    "no Bambu Studio / OrcaSlicer."
+                )
+            info = get_color_info(tmp_path)
+
+            outcome = run_auto_color_split(
+                split_result,
+                plate_x,
+                plate_y,
+                plate_z,
+                generate_connectors=payload.generate_connectors,
+                tolerance_mm=tolerance_for_material(payload.material),
+                pin_shape=payload.connector_pin_shape,
+                cap_method=payload.cap_method,
+                progress=lambda p, s: _set_progress(task_id, p, s),
+            )
+            if not outcome.plates:
+                raise ValueError("A separação não gerou nenhuma peça válida.")
+
+            _set_progress(task_id, 88, "Gerando os arquivos 3MF prontos para impressão...")
+            safe_model_name = sanitize_storage_key(split_result.model_name)
+            suffix = "pinos" if payload.generate_connectors else "cores"
+            base_dir = f"pieces/{payload.user_id}/{model_id}"
+
+            plates_out: list[AutoPlateOutput] = []
+            unified_meshes: list[trimesh.Trimesh] = []
+            unified_colors: list[str] = []
+            oversized = 0
+
+            for idx, ap in enumerate(outcome.plates, start=1):
+                threemf_bytes = write_plate_3mf_bytes(
+                    meshes=ap.meshes,
+                    colors=[ap.color_hex] * len(ap.meshes),
+                    model_name=f"{safe_model_name}_mesa{idx}",
+                    snap_to_floor=False,  # já posicionadas e assentadas no empacotamento
+                )
+                safe_color = ap.color_hex.replace("#", "")
+                storage_path = f"{base_dir}/{model_id}_auto_{suffix}_mesa{idx}_ext{ap.extruder_number}_{safe_color}.3mf"
+                upload_bytes(supabase, storage_path, threemf_bytes, content_type="model/3mf")
+                dl_url = create_download_url(supabase, storage_path, expires_in=3600)
+
+                if not ap.fits_in_plate:
+                    oversized += 1
+                label = f"Cor {ap.extruder_number}"
+                if ap.plate_index_in_color > 1 or ap.is_subdivided:
+                    label += f" — Mesa {ap.plate_index_in_color}"
+
+                plates_out.append(
+                    AutoPlateOutput(
+                        plate_number=idx,
+                        extruder_number=ap.extruder_number,
+                        color_hex=ap.color_hex,
+                        storage_path=storage_path,
+                        download_url=dl_url,
+                        fits_in_plate=ap.fits_in_plate,
+                        extents_mm=ap.extents_mm,
+                        label=label,
+                        is_subdivided=ap.is_subdivided,
+                        part_labels=ap.part_labels,
+                        has_connectors=ap.has_connectors,
+                    )
+                )
+                unified_meshes.append(center_and_ground(trimesh.util.concatenate(ap.meshes)))
+                unified_colors.append(ap.color_hex)
+
+            unified_bytes = write_plate_3mf_bytes(
+                meshes=unified_meshes,
+                colors=unified_colors,
+                model_name=f"{split_result.model_name}_completo",
+                snap_to_floor=True,
+            )
+            unified_fname = f"{safe_model_name}_completo_{suffix}.3mf"
+            unified_path = f"{base_dir}/{unified_fname}"
+            upload_bytes(supabase, unified_path, unified_bytes, content_type="model/3mf")
+            unified_url = create_download_url(supabase, unified_path, expires_in=3600)
+
+            return AutoColorSplitResponse(
+                model_id=model_id,
+                plates=plates_out,
+                total_pieces=outcome.total_parts,
+                oversized_count=oversized,
+                unified_download_url=unified_url,
+                unified_file_name=unified_fname,
+                filaments=[FilamentInfoOut(**f) for f in info.get("filaments", [])],
+                generate_connectors=payload.generate_connectors,
+                interface_pins=outcome.interface_pins,
+                subdivided_colors=outcome.subdivided_colors,
+                method=split_result.method,
+            )
+
+        result = await asyncio.to_thread(process)
+        _TASKS[task_id] = {
+            "status": "completed",
+            "progress": 100,
+            "stage": "Concluído!",
+            "result": result.model_dump(),
+            "user_id": payload.user_id,
+        }
+        logger.info(
+            "Separação automática concluída (modelo %s): %d mesas, pinos entre cores=%d",
+            model_id,
+            len(result.plates),
+            result.interface_pins,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erro na separação automática do modelo %s", model_id)
+        _TASKS[task_id] = {
+            "status": "failed",
+            "error": str(exc),
+            "user_id": payload.user_id,
+        }
+    finally:
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)

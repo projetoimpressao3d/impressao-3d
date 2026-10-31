@@ -331,7 +331,7 @@ export function WorkspaceShell({
     (model: Model) => {
       if (selectedModel?.id !== model.id) {
         resetSplitStates();
-        setSmartSplitOption(model.format === "3mf" ? "colors" : "linear");
+        setSmartSplitOption(null);
       }
       setSelectedModel(model);
     },
@@ -344,10 +344,8 @@ export function WorkspaceShell({
       setSelectModelModalOpen(true);
       return;
     }
-    if (preferredOption) {
+    if (preferredOption !== undefined) {
       setSmartSplitOption(preferredOption);
-    } else if (!smartSplitOption) {
-      setSmartSplitOption(selectedModel.format === "3mf" ? "colors" : "linear");
     }
   }
 
@@ -1146,7 +1144,7 @@ export function WorkspaceShell({
               selectedModel !== null && activeTab !== "smart-split"
             }
             onClickSmartSplitButton={() =>
-              handleNavigateToSmartSplit("colors")
+              handleNavigateToSmartSplit()
             }
             active3DUrl={active3DUrl}
             colorSplitResult={colorSplitResult}

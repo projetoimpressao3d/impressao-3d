@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import type { BuildPlate } from "@/types/database";
 
 export interface FilamentInfo {
@@ -21,6 +21,8 @@ export interface PlateOutput {
   extents_mm: number[];
   label?: string | null;
   is_subdivided?: boolean;
+  part_labels?: string[];
+  has_connectors?: boolean;
 }
 
 export interface ColorSplitResult {
@@ -30,6 +32,11 @@ export interface ColorSplitResult {
   oversized_count: number;
   unified_download_url?: string | null;
   unified_file_name?: string | null;
+  filaments?: FilamentInfo[];
+  generate_connectors?: boolean;
+  interface_pins?: number;
+  subdivided_colors?: number[];
+  method?: string;
 }
 
 interface ColorSplitPanelProps {
@@ -39,10 +46,10 @@ interface ColorSplitPanelProps {
   selectedPlateId: string | null;
   onPlateChange: (id: string) => void;
   hasSubscription: boolean;
+  generateConnectors?: boolean;
+  autoStart?: boolean;
   onShowPreview?: () => void;
   colorPreviewMode?: boolean;
-  onSplitOversizedPiece?: (plate: PlateOutput) => void;
-  // After any split/subdivide completes, propagate to the viewer for 3D preview
   onSplitCompleted?: (result: ColorSplitResult) => void;
   onReset?: () => void;
   selectedColorPlateIdx?: number | "all";
@@ -50,11 +57,10 @@ interface ColorSplitPanelProps {
   onSwitchToLinearMode?: () => void;
 }
 
-
 function ColorSwatch({ hex }: { hex: string }) {
   return (
     <span
-      className="inline-block h-4 w-4 rounded-sm border border-gray-600 shadow-sm flex-shrink-0"
+      className="inline-block h-4 w-4 rounded-sm border border-zinc-700 shadow-sm flex-shrink-0"
       style={{ backgroundColor: hex }}
     />
   );
@@ -64,12 +70,15 @@ function fmm(v: number) {
   return v.toFixed(1);
 }
 
-/** Extrai mensagem de erro de uma resposta HTTP de forma segura (JSON ou texto puro). */
 async function safeErrorMessage(res: Response): Promise<string> {
   try {
     const ct = res.headers.get("content-type") ?? "";
     if (ct.includes("application/json")) {
-      const j = (await res.json()) as { detail?: string; error?: string; message?: string };
+      const j = (await res.json()) as {
+        detail?: string;
+        error?: string;
+        message?: string;
+      };
       return j.detail ?? j.error ?? j.message ?? `HTTP ${res.status}`;
     }
     const text = await res.text();
@@ -79,516 +88,255 @@ async function safeErrorMessage(res: Response): Promise<string> {
   }
 }
 
-type SubdivideMode = "character" | "general";
-
-interface SubdivideConfig {
-  plate: PlateOutput;
-  mode: SubdivideMode;
-  characterTemplate: string;
-  generalGranularity: string;
-  sensitivity: number;
-  generateConnectors: boolean;
-  connectorPinShape: "hex" | "triangle" | "cylinder";
-}
-
 export function ColorSplitPanel({
   modelId,
   modelFormat,
   buildPlates,
   selectedPlateId,
-  onPlateChange,
-  hasSubscription,
+  hasSubscription: _hasSubscription,
+  generateConnectors = false,
+  autoStart = true,
   onShowPreview,
   colorPreviewMode = false,
-  onSplitOversizedPiece,
   onSplitCompleted,
   onReset,
   selectedColorPlateIdx,
   onSelectColorPlateIdx,
-  onSwitchToLinearMode,
 }: ColorSplitPanelProps) {
-
-  const [colorInfo, setColorInfo] = useState<{
-    is_painted: boolean;
-    total_faces: number;
-    filaments: FilamentInfo[];
-    method?: string;
-  } | null>(null);
-
   const [splitResult, setSplitResult] = useState<ColorSplitResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [splitting, setSplitting] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [stage, setStage] = useState("Iniciando processo...");
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
-  const [snapToFloor, setSnapToFloor] = useState(true);
-
-  // Subdivide inline flow
-  const [subdividingPlate, setSubdividingPlate] = useState<PlateOutput | null>(null);
-  const [subdivideConfig, setSubdivideConfig] = useState<Omit<SubdivideConfig, "plate">>({
-    mode: "character",
-    characterTemplate: "creature",
-    generalGranularity: "auto",
-    sensitivity: 5,
-    generateConnectors: true,
-    connectorPinShape: "hex",
-  });
-  const [isSubdividing, setIsSubdividing] = useState(false);
-  const [progress, setProgress] = useState(0);
 
   const selectedPlate = buildPlates.find((p) => p.id === selectedPlateId);
   const is3mf = modelFormat === "3mf";
+  const startedRef = useRef(false);
 
-  // ── Etapa 1: Detectar cores ──────────────────────────────────────────────
-  const handleDetectColors = async () => {
-    setLoading(true);
+  const handleStartAutoSplit = useCallback(async () => {
+    if (!selectedPlateId) {
+      setError("Selecione uma mesa de trabalho antes de iniciar.");
+      return;
+    }
+    setIsProcessing(true);
     setError(null);
-    setColorInfo(null);
+    setProgress(5);
+    setStage("Iniciando separação automática...");
     setDone(false);
     setSplitResult(null);
-    setSubdividingPlate(null);
 
     try {
-      const res = await fetch(`/api/color-split/${modelId}/info`);
-      if (!res.ok) {
-        if (res.status === 503) {
-          throw new Error(
-            "O serviço de processamento não está disponível no momento. " +
-            "O backend Python precisa ser configurado para usar esta funcionalidade.",
-          );
-        }
-        throw new Error(await safeErrorMessage(res));
-      }
-      const data = (await res.json()) as {
-        is_painted: boolean;
-        total_faces: number;
-        filaments: FilamentInfo[];
-      };
-      setColorInfo(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-
-  // ── Etapa 2: Separar peças por cor ──────────────────────────────────────
-  const handleSplitByColor = async () => {
-    if (!selectedPlateId) return;
-    setSplitting(true);
-    setError(null);
-
-    try {
-      const res = await fetch(`/api/color-split/${modelId}/split`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ build_plate_id: selectedPlateId, snap_to_floor: snapToFloor }),
-      });
-      if (!res.ok) {
-        const msg = await safeErrorMessage(res);
-        throw new Error(msg);
-      }
-      const data = (await res.json()) as ColorSplitResult;
-      setSplitResult(data);
-      setDone(true);
-      onSplitCompleted?.(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSplitting(false);
-    }
-  };
-
-
-  // ── Etapa 3: Subdividir peça oversized (inline) ──────────────────────────
-  const handleSubdividePiece = async () => {
-    if (!subdividingPlate || !selectedPlateId) return;
-    setIsSubdividing(true);
-    setError(null);
-    setProgress(0);
-
-    try {
-      const res = await fetch(`/api/color-split/${modelId}/subdivide`, {
+      const res = await fetch(`/api/color-split/${modelId}/auto-split`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           build_plate_id: selectedPlateId,
-          extruder_number: subdividingPlate.extruder_number,
-          mode: subdivideConfig.mode,
-          character_template: subdivideConfig.characterTemplate,
-          general_granularity: subdivideConfig.generalGranularity,
-          structural_sensitivity: subdivideConfig.sensitivity / 100,
-          generate_connectors: subdivideConfig.generateConnectors,
-          connector_pin_shape: subdivideConfig.connectorPinShape,
-          connector_tolerance_mm: 0.2,
-          snap_to_floor: snapToFloor,
+          generate_connectors: generateConnectors,
+          material: "PLA",
+          connector_pin_shape: "hex",
+          cap_method: "earcut",
         }),
       });
 
       if (!res.ok) {
-        const msg = await safeErrorMessage(res);
-        throw new Error(msg);
+        throw new Error(await safeErrorMessage(res));
       }
 
-      const data = await res.json();
-      
-      if (data.task_id) {
-        let status = "processing";
-        while (status === "processing") {
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          const pollRes = await fetch(`/api/color-split/tasks/${data.task_id}`);
-          if (!pollRes.ok) throw new Error("Erro ao verificar status da tarefa");
-          const pollData = await pollRes.json();
-          
-          if (pollData.progress !== undefined) {
-            setProgress(pollData.progress);
-          }
-          
-          if (pollData.status === "completed") {
-            setSplitResult(pollData.result);
-            setSubdividingPlate(null);
-            onSplitCompleted?.(pollData.result);
-            break;
-          } else if (pollData.status === "failed") {
-            throw new Error(pollData.error || "Erro no processamento da tarefa");
-          }
+      const data = (await res.json()) as { task_id: string };
+      if (!data.task_id) {
+        throw new Error("Não foi retornado identificador de tarefa do servidor.");
+      }
+
+      const taskId = data.task_id;
+      let isCompleted = false;
+      let attempts = 0;
+      const maxAttempts = 120; // até 4 minutos
+
+      while (!isCompleted && attempts < maxAttempts) {
+        attempts++;
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+
+        const pollRes = await fetch(`/api/color-split/tasks/${taskId}`);
+        if (!pollRes.ok) {
+          throw new Error("Falha ao consultar status do processamento.");
         }
-      } else {
-        setSplitResult(data as ColorSplitResult);
-        setSubdividingPlate(null);
-        onSplitCompleted?.(data as ColorSplitResult);
+
+        const pollData = (await pollRes.json()) as {
+          status: "processing" | "completed" | "failed";
+          progress?: number;
+          stage?: string;
+          error?: string;
+          result?: ColorSplitResult;
+        };
+
+        if (pollData.progress !== undefined) {
+          setProgress(pollData.progress);
+        }
+        if (pollData.stage) {
+          setStage(pollData.stage);
+        }
+
+        if (pollData.status === "completed" && pollData.result) {
+          isCompleted = true;
+          setSplitResult(pollData.result);
+          setDone(true);
+          setIsProcessing(false);
+          setProgress(100);
+          onSplitCompleted?.(pollData.result);
+          break;
+        } else if (pollData.status === "failed") {
+          throw new Error(pollData.error || "O processamento da malha falhou.");
+        }
+      }
+
+      if (!isCompleted) {
+        throw new Error("O processamento excedeu o tempo limite. Tente novamente.");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setIsSubdividing(false);
-      setProgress(0);
+      setIsProcessing(false);
     }
-  };
+  }, [modelId, selectedPlateId, generateConnectors, onSplitCompleted]);
 
-  // ── Guard: apenas .3mf ──────────────────────────────────────────────────
+  // Auto-inicia ao carregar caso autoStart=true e ainda não tenha rodado
+  useEffect(() => {
+    if (autoStart && !startedRef.current && !done && !isProcessing && selectedPlateId) {
+      startedRef.current = true;
+      void handleStartAutoSplit();
+    }
+  }, [autoStart, done, isProcessing, selectedPlateId, handleStartAutoSplit]);
 
   if (!is3mf) {
     return (
-      <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
-        <p className="text-sm font-semibold text-amber-800">Formato nao suportado</p>
-        <p className="mt-1 text-xs text-amber-700">
-          A separacao por cor requer um arquivo <strong>.3mf</strong> pintado no Bambu Studio,
-          OrcaSlicer ou PrusaSlicer. Faca o upload de um arquivo .3mf pintado.
+      <div className="rounded-xl border border-amber-500/40 bg-amber-950/30 p-4">
+        <p className="text-xs font-semibold text-amber-300">
+          Formato não suportado
+        </p>
+        <p className="mt-1 text-[11px] text-amber-400">
+          A separação por cores requer um arquivo <strong>.3mf</strong> pintado
+          (Bambu Studio, OrcaSlicer, PrusaSlicer).
         </p>
       </div>
     );
   }
 
-  // ── Painel inline de configuração de subdivisão ──────────────────────────
-  if (subdividingPlate) {
-    return (
-      <div className="mt-4 space-y-4">
-        <div className="rounded-xl border border-amber-700 bg-amber-950/30 px-4 py-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs font-semibold text-amber-300">
-                ✂️ Fatiando Extruder {subdividingPlate.extruder_number}
-              </p>
-              <p className="text-[11px] text-amber-500 mt-0.5">
-                {subdividingPlate.extents_mm.map(fmm).join(" × ")} mm
-                {" · "}⚠️ Não cabe na mesa {selectedPlate?.name ?? ""}
-              </p>
-            </div>
-            <ColorSwatch hex={subdividingPlate.color_hex} />
+  return (
+    <div className="space-y-4">
+      {/* 1. Estado em Processamento com barra de progresso */}
+      {isProcessing && (
+        <div className="rounded-xl border border-emerald-500/40 bg-emerald-950/20 p-4 text-center">
+          <div className="flex items-center justify-center gap-2.5 text-xs font-bold text-emerald-300">
+            <svg
+              className="h-4 w-4 animate-spin text-emerald-400"
+              viewBox="0 0 24 24"
+              fill="none"
+            >
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+              />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8v8H4z"
+              />
+            </svg>
+            <span>
+              {generateConnectors
+                ? "Separação por Cores + Pinos de Encaixe"
+                : "Separação por Cores"}
+            </span>
           </div>
-          <p className="mt-2 text-[11px] text-amber-400">
-            Esta peça será dividida de forma balanceada pelo gargalo central para caber perfeitamente na sua mesa de impressão. Todas as outras cores do modelo continuam preservadas.
+
+          <p className="mt-2 text-xs font-medium text-emerald-400">{stage}</p>
+
+          {/* Barra de progresso */}
+          <div className="mt-3.5 h-2 w-full overflow-hidden rounded-full bg-zinc-800">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-emerald-600 to-emerald-400 transition-all duration-300"
+              style={{ width: `${Math.max(5, progress)}%` }}
+            />
+          </div>
+          <p className="mt-1.5 font-mono text-[11px] text-zinc-400">
+            {progress}% concluído
+          </p>
+
+          <p className="mt-3 text-[10px] text-zinc-400">
+            O processo está identificando as cores, subdividindo as peças maiores
+            que a mesa {selectedPlate?.name ? `(${selectedPlate.name})` : ""} e
+            gerando arquivos 3MF prontos para impressão.
           </p>
         </div>
-
-        {/* Informação do algoritmo */}
-        <div className="rounded-xl border border-emerald-800/50 bg-emerald-950/20 p-3 space-y-1.5">
-          <div className="flex items-center gap-2">
-            <span className="text-sm">⚖️</span>
-            <div>
-              <p className="text-xs font-semibold text-emerald-300">Bisseção Central Balanceada</p>
-              <p className="text-[10px] text-emerald-500">
-                O corte divide o modelo no ponto de menor seção transversal dentro da faixa central (35% a 65%), gerando metades funcionais e sem amputar pontas de membros.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Config: Conectores */}
-        <div className="rounded-xl border border-indigo-800/40 bg-indigo-950/20 p-3 space-y-2">
-          <label className="flex items-center gap-2 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={subdivideConfig.generateConnectors}
-              onChange={(e) => setSubdivideConfig((c) => ({ ...c, generateConnectors: e.target.checked }))}
-              className="h-4 w-4 rounded border-indigo-700 text-indigo-500"
-            />
-            <span className="text-xs font-semibold text-indigo-300">
-              🧩 Conectores Mecânicos Macho/Fêmea (0.2mm de folga)
-            </span>
-          </label>
-          {subdivideConfig.generateConnectors && (
-            <div className="flex items-center gap-2 pl-6">
-              <span className="text-[11px] text-indigo-400">Formato do pino:</span>
-              <select
-                value={subdivideConfig.connectorPinShape}
-                onChange={(e) => setSubdivideConfig((c) => ({ ...c, connectorPinShape: e.target.value as "hex" | "triangle" | "cylinder" }))}
-                className="rounded border border-indigo-700 bg-gray-800 px-2 py-1 text-xs text-white focus:outline-none"
-              >
-                <option value="hex">Hexagonal (Anti-rotação)</option>
-                <option value="cylinder">Cilíndrico</option>
-                <option value="triangle">Triangular</option>
-              </select>
-            </div>
-          )}
-        </div>
-
-        {error && (
-          <div className="rounded-xl border border-red-700 bg-red-950/40 p-3">
-            <p className="text-xs text-red-300">{error}</p>
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          <button
-            className="flex-1 rounded-xl bg-amber-600 px-4 py-3 text-sm font-semibold text-white hover:bg-amber-500 disabled:opacity-60 transition-colors"
-            onClick={handleSubdividePiece}
-            disabled={isSubdividing || !selectedPlateId}
-          >
-            {isSubdividing ? (
-              <div className="flex flex-col items-center justify-center gap-1 w-full">
-                <span className="flex items-center gap-2">
-                  <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-                  </svg>
-                  Processando... {progress}%
-                </span>
-                <div className="w-full bg-amber-800 rounded-full h-1.5 mt-1 overflow-hidden">
-                  <div className="bg-white h-1.5 rounded-full transition-all duration-300" style={{ width: `${progress}%` }}></div>
-                </div>
-              </div>
-            ) : (
-              "✂️ Fatiar e Gerar Arquivo Completo"
-            )}
-          </button>
-          <button
-            className="rounded-xl border border-gray-600 px-4 py-3 text-sm text-gray-400 hover:text-gray-200 transition-colors"
-            onClick={() => { setSubdividingPlate(null); setError(null); }}
-            disabled={isSubdividing}
-          >
-            Cancelar
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="mt-4 space-y-4">
-      {/* Selecao de mesa */}
-      <div>
-        <label className="block text-xs font-medium text-gray-400 mb-1">
-          Mesa de impressao
-        </label>
-        <select
-          className="w-full rounded-lg bg-gray-800 border border-gray-700 px-3 py-2 text-sm text-white"
-          value={selectedPlateId ?? ""}
-          onChange={(e) => onPlateChange(e.target.value)}
-        >
-          {buildPlates.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name} ({p.build_volume_x_mm}x{p.build_volume_y_mm}x{p.build_volume_z_mm}mm)
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Etapa 1: Detectar cores */}
-      {!colorInfo && !done && (
-        <button
-          className="w-full rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-60 transition-colors"
-          onClick={handleDetectColors}
-          disabled={loading}
-        >
-          {loading ? (
-            <span className="flex items-center justify-center gap-2">
-              <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-              </svg>
-              Detectando cores...
-            </span>
-          ) : (
-            "🎨 Detectar Cores do Modelo"
-          )}
-        </button>
       )}
 
-      {/* Resultado da detecao */}
-      {colorInfo && !done && (
-        <div className="space-y-3">
-          {colorInfo.is_painted ? (
-            <>
-              <div className="rounded-xl border border-emerald-700 bg-emerald-950/40 p-3">
-                <p className="text-xs font-semibold text-emerald-400 mb-1">
-                  ✅ {colorInfo.filaments.length} cores detectadas
-                </p>
-                {colorInfo.method === "multi_object" && (
-                  <p className="text-[10px] text-emerald-600 mb-2">
-                    🧩 Peças fisicamente separadas (sem AMS necessário)
-                  </p>
-                )}
-                <div className="space-y-1.5">
-                  {colorInfo.filaments.map((f) => (
-                    <div key={f.index} className="flex items-center gap-2 text-xs text-gray-300">
-                      <ColorSwatch hex={f.color_hex} />
-                      <span className="font-mono text-gray-400">Ext {f.extruder_number}</span>
-                      <span>{f.face_count.toLocaleString()} faces</span>
-                      <span className="ml-auto text-gray-500">{f.face_percentage}%</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Toggle: posicionamento das pecas no download */}
-              <div className="rounded-xl border border-gray-700 bg-gray-800/60 p-3">
-                <p className="text-xs font-semibold text-gray-300 mb-2">📐 Posicao no download</p>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setSnapToFloor(true)}
-                    className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors ${
-                      snapToFloor
-                        ? "bg-emerald-700 text-white"
-                        : "bg-gray-700 text-gray-400 hover:bg-gray-600"
-                    }`}
-                  >
-                    📦 Na base (Z=0)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setSnapToFloor(false)}
-                    className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors ${
-                      !snapToFloor
-                        ? "bg-indigo-700 text-white"
-                        : "bg-gray-700 text-gray-400 hover:bg-gray-600"
-                    }`}
-                  >
-                    🌐 Posicao original
-                  </button>
-                </div>
-                <p className="mt-1.5 text-[10px] text-gray-500">
-                  {snapToFloor
-                    ? "Cada peca sera encostada na base da mesa para impressao direta."
-                    : "Mantem a posicao original do modelo (pode flutuar acima da mesa)."}
-                </p>
-              </div>
-
-              <div className="space-y-2.5">
-                <p className="text-xs font-semibold text-gray-300">Escolha o fluxo de produção:</p>
-                
-                {/* Opção 1: Separar por cor (1 bico) */}
-                <button
-                  type="button"
-                  className="w-full rounded-xl border border-emerald-600 bg-emerald-950/60 p-3 text-left transition-all hover:bg-emerald-900/60 hover:border-emerald-500 group shadow-sm disabled:opacity-60"
-                  onClick={handleSplitByColor}
-                  disabled={splitting || !selectedPlateId}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-emerald-300 group-hover:text-emerald-200 flex items-center gap-1.5">
-                      🎨 Separar Cores para Montagem
-                    </span>
-                    <span className="rounded bg-emerald-800/80 px-2 py-0.5 text-[10px] font-medium text-emerald-200">
-                      1 Bico / Sem AMS
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-emerald-400/90 mt-1 leading-snug">
-                    Separa cada cor do modelo em mesas individuais. Ideal para imprimir cada parte com um filamento diferente e montar/colar após a impressão.
-                  </p>
-                </button>
-
-                {/* Opção 2: Fatiar completo mantendo cores (AMS) */}
-                {onSwitchToLinearMode && (
-                  <button
-                    type="button"
-                    onClick={onSwitchToLinearMode}
-                    className="w-full rounded-xl border border-indigo-700 bg-indigo-950/40 p-3 text-left transition-all hover:bg-indigo-900/50 hover:border-indigo-500 group shadow-sm"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-indigo-300 group-hover:text-indigo-200 flex items-center gap-1.5">
-                        ✂️ Fatiar Modelo Completo
-                      </span>
-                      <span className="rounded bg-indigo-800/80 px-2 py-0.5 text-[10px] font-medium text-indigo-200">
-                        Multicor AMS
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-indigo-400/90 mt-1 leading-snug">
-                      Mantém a pintura colorida e divide o modelo inteiro em partes menores para caber na sua mesa de impressão.
-                    </p>
-                  </button>
-                )}
-              </div>
-
-              {splitting && (
-                <div className="rounded-xl border border-emerald-700 bg-emerald-950/50 p-3 text-center">
-                  <div className="flex items-center justify-center gap-2 text-xs font-semibold text-emerald-300">
-                    <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-                    </svg>
-                    Separando peças por cor e calculando mesas...
-                  </div>
-                </div>
-              )}
-
-              <button
-                className="w-full rounded-lg px-4 py-2 text-xs text-gray-400 hover:text-gray-300 transition-colors"
-                onClick={() => setColorInfo(null)}
-              >
-                Cancelar
-              </button>
-            </>
-          ) : (
-            <div className="rounded-xl border border-amber-700 bg-amber-950/40 p-3">
-              <p className="text-xs font-semibold text-amber-400">⚠️ Modelo sem cores identificadas</p>
-              <p className="mt-1 text-xs text-amber-300">
-                Este arquivo .3mf nao possui cores de filamento pintadas nem pecas separadas por extruder.
-                Use o Bambu Studio para pintar o modelo ou organize as pecas por extruder.
-              </p>
-            </div>
-          )}
+      {/* 2. Botão Manual caso ainda não tenha iniciado ou resetado */}
+      {!isProcessing && !done && (
+        <div className="space-y-2.5">
+          <button
+            type="button"
+            onClick={() => void handleStartAutoSplit()}
+            disabled={!selectedPlateId}
+            className="w-full rounded-xl bg-emerald-600 px-4 py-3 text-xs font-bold text-white shadow-md transition-colors hover:bg-emerald-500 disabled:opacity-50"
+          >
+            {generateConnectors
+              ? "▶ Iniciar Separação por Cores + Pinos"
+              : "▶ Iniciar Separação por Cores"}
+          </button>
         </div>
       )}
 
-
-      {/* Resultado: lista de peças com downloads */}
-      {done && splitResult && splitResult.plates.length > 0 && (
+      {/* 3. Resultado: lista de peças e botões de download */}
+      {done && splitResult && (
         <div className="space-y-3">
-          {/* Header e status */}
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-semibold text-emerald-400">
-              ✅ {splitResult.total_pieces} {splitResult.total_pieces === 1 ? "peça separada" : "peças separadas"}
-            </p>
-            {splitResult.oversized_count > 0 && (
-              <span className="rounded bg-amber-900/60 px-2 py-0.5 text-[10px] text-amber-300">
-                ⚠️ {splitResult.oversized_count} excede a mesa
+          {/* Header de Resumo */}
+          <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/30 p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-emerald-300">
+                ✅ {splitResult.total_pieces}{" "}
+                {splitResult.total_pieces === 1
+                  ? "peça gerada"
+                  : "peças geradas"}
               </span>
-            )}
+              <span className="rounded bg-emerald-900/60 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+                {splitResult.plates.length}{" "}
+                {splitResult.plates.length === 1 ? "mesa" : "mesas"}
+              </span>
+            </div>
+
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {generateConnectors && (
+                <span className="rounded border border-indigo-500/40 bg-indigo-950/60 px-2 py-0.5 text-[10px] font-medium text-indigo-300">
+                  🧩 Pinos de encaixe automáticos
+                </span>
+              )}
+              {splitResult.subdivided_colors &&
+                splitResult.subdivided_colors.length > 0 && (
+                  <span className="rounded border border-amber-500/40 bg-amber-950/60 px-2 py-0.5 text-[10px] font-medium text-amber-300">
+                    ✂️ Peças adaptadas à mesa
+                  </span>
+                )}
+            </div>
           </div>
 
-          {/* Botão de visualização 3D */}
+          {/* Botão de alternar visualização 3D nas mesas */}
           {onShowPreview && (
             <button
-              className={`w-full rounded-xl px-4 py-2.5 text-sm font-semibold transition-colors ${
+              type="button"
+              className={`w-full rounded-xl px-4 py-2 text-xs font-semibold transition-colors ${
                 colorPreviewMode
-                  ? "bg-emerald-700 text-white hover:bg-emerald-600"
-                  : "bg-gray-700 text-gray-200 hover:bg-gray-600"
+                  ? "border border-emerald-500/50 bg-emerald-600 text-white"
+                  : "border border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-white"
               }`}
               onClick={onShowPreview}
             >
-              {colorPreviewMode ? "👁 Ocultar visualização 3D" : "👁 Ver peças nas mesas (3D)"}
+              {colorPreviewMode
+                ? "👁 Ocultar visualização 3D"
+                : "👁 Ver peças nas mesas (3D)"}
             </button>
           )}
 
@@ -597,133 +345,124 @@ export function ColorSplitPanel({
             <a
               href={splitResult.unified_download_url}
               download={splitResult.unified_file_name ?? "modelo_completo.3mf"}
-              className="flex items-center justify-between w-full rounded-xl border border-emerald-600 bg-emerald-900/40 px-4 py-3 transition-colors hover:bg-emerald-900/70 group"
+              className="group flex w-full items-center justify-between rounded-xl border border-emerald-500/60 bg-emerald-950/40 px-4 py-3 shadow-md transition-colors hover:bg-emerald-900/50"
             >
-              <div>
-                <p className="text-xs font-semibold text-emerald-300 group-hover:text-emerald-200">
+              <div className="min-w-0 pr-2">
+                <p className="text-xs font-bold text-emerald-300 group-hover:text-emerald-200">
                   ⬇ Baixar Arquivo Completo (.3mf)
                 </p>
-                <p className="text-[10px] text-emerald-500 mt-0.5">
-                  Todas as {splitResult.total_pieces} peças e cores em um único arquivo
+                <p className="truncate text-[10px] text-emerald-400/80">
+                  Todas as cores e peças prontas para impressão
                 </p>
               </div>
-              <span className="flex-shrink-0 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm">
+              <span className="shrink-0 rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-bold text-white shadow-sm">
                 .3mf
               </span>
             </a>
           )}
 
-          {/* Lista individual por peça/cor */}
+          {/* Lista individual por mesa/cor */}
           <div className="space-y-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+              Mesas de Impressão Geradas:
+            </p>
             {splitResult.plates.map((plate, idx) => {
-              const sizeStr = plate.extents_mm.map(fmm).join("×") + "mm";
-              const label = plate.label ?? `Extruder ${plate.extruder_number}`;
+              const sizeStr = plate.extents_mm.map(fmm).join(" × ") + " mm";
+              const label = plate.label ?? `Cor ${plate.extruder_number}`;
+              const isSelected = selectedColorPlateIdx === idx;
+
               return (
                 <div
                   key={`${plate.plate_number}-${plate.extruder_number}-${idx}`}
                   onClick={() => onSelectColorPlateIdx?.(idx)}
-                  className={`flex items-center gap-3 rounded-lg border p-3 cursor-pointer transition-all ${
-                    selectedColorPlateIdx === idx
-                      ? "border-emerald-500 bg-emerald-950/40 ring-1 ring-emerald-500 shadow-md"
-                      : plate.is_subdivided
-                      ? "border-amber-700/50 bg-amber-950/20 hover:border-gray-600 hover:bg-gray-800/80"
-                      : "border-gray-700 bg-gray-800/60 hover:border-gray-600 hover:bg-gray-800/80"
+                  className={`flex cursor-pointer items-center gap-2.5 rounded-lg border p-2.5 transition-all ${
+                    isSelected
+                      ? "border-emerald-500 bg-emerald-950/40 ring-1 ring-emerald-500"
+                      : "border-zinc-800 bg-zinc-950/70 hover:border-zinc-700 hover:bg-zinc-800/50"
                   }`}
                 >
                   <ColorSwatch hex={plate.color_hex} />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <p className="text-xs font-semibold text-white truncate">
-                        {plate.is_subdivided && <span className="text-amber-400 mr-1">✂</span>}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1">
+                      <p className="truncate text-xs font-semibold text-zinc-200">
                         {label}
                       </p>
-                      {selectedColorPlateIdx === idx && (
-                        <span className="rounded bg-emerald-600/90 px-1.5 py-0.5 text-[9px] font-semibold text-white uppercase tracking-wider">
-                          👁 3D Ativo
+                      {plate.is_subdivided && (
+                        <span className="rounded bg-amber-950/60 px-1 py-0.2 text-[9px] font-semibold text-amber-400">
+                          ✂ Dividida
+                        </span>
+                      )}
+                      {plate.has_connectors && (
+                        <span className="rounded bg-indigo-950/60 px-1 py-0.2 text-[9px] font-semibold text-indigo-400">
+                          🧩 Pinos
                         </span>
                       )}
                     </div>
-                    <p className="text-[10px] text-gray-400 font-mono mt-0.5">{sizeStr}</p>
-                    {!plate.fits_in_plate && (
-                      <div className="mt-1 flex flex-col items-start gap-1">
-                        <p className="text-[10px] text-amber-400">
-                          ⚠️ Maior que a mesa ({selectedPlate?.name})
-                        </p>
-                        {hasSubscription && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSubdividingPlate(plate);
-                              setError(null);
-                              onSplitOversizedPiece?.(plate);
-                            }}
-                            className="inline-flex items-center gap-1 rounded bg-amber-600/90 px-2 py-0.5 text-[10px] font-medium text-white transition hover:bg-amber-500 shadow-sm"
-                          >
-                            ✂️ Fatiar Peça para Caber
-                          </button>
-                        )}
-                      </div>
-                    )}
+                    <p className="font-mono text-[10px] text-zinc-400">
+                      {sizeStr}
+                    </p>
                   </div>
-                  <div className="flex items-center gap-1 flex-shrink-0">
+
+                  <div className="flex shrink-0 items-center gap-1">
                     <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         onSelectColorPlateIdx?.(idx);
                       }}
-                      className={`rounded-lg px-2 py-1.5 text-xs font-medium transition ${
-                        selectedColorPlateIdx === idx
-                          ? "bg-emerald-600 text-white shadow-sm"
-                          : "bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white"
+                      className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
+                        isSelected
+                          ? "bg-emerald-600 text-white"
+                          : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-white"
                       }`}
-                      title="Exibir esta mesa no visualizador 3D"
+                      title="Exibir no visualizador 3D"
                     >
                       👁 Ver
                     </button>
-                    {hasSubscription ? (
-                      <a
-                        href={plate.download_url}
-                        download
-                        onClick={(e) => e.stopPropagation()}
-                        className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 transition-colors shadow-sm"
-                        title="Baixar .3mf desta mesa"
-                      >
-                        ⬇
-                      </a>
-                    ) : (
-                      <span className="rounded-lg bg-gray-700 px-3 py-1.5 text-xs font-semibold text-gray-400">
-                        🔒 Pro
-                      </span>
-                    )}
+                    <a
+                      href={plate.download_url}
+                      download
+                      onClick={(e) => e.stopPropagation()}
+                      className="rounded bg-emerald-600 px-2 py-1 text-[11px] font-bold text-white transition-colors hover:bg-emerald-500"
+                      title="Baixar .3mf desta mesa"
+                    >
+                      ⬇
+                    </a>
                   </div>
                 </div>
               );
             })}
           </div>
 
+          {/* Botão de Nova Separação */}
           <button
-            className="w-full rounded-lg border border-gray-700 px-4 py-2 text-xs text-gray-400 hover:text-gray-300 transition-colors"
+            type="button"
+            className="w-full rounded-xl border border-zinc-800 py-2.5 text-xs text-zinc-400 transition-colors hover:border-zinc-700 hover:bg-zinc-800/40 hover:text-zinc-200"
             onClick={() => {
               setDone(false);
-              setColorInfo(null);
               setSplitResult(null);
-              setSubdividingPlate(null);
               setError(null);
+              startedRef.current = false;
               onReset?.();
             }}
           >
-            Nova separacao
+            🔄 Nova separação / Escolher outra opção
           </button>
         </div>
       )}
 
-      {/* Erro */}
+      {/* 4. Erro */}
       {error && (
-        <div className="rounded-xl border border-red-700 bg-red-950/40 p-3">
-          <p className="text-xs font-semibold text-red-400">Erro</p>
+        <div className="rounded-xl border border-red-500/40 bg-red-950/30 p-3">
+          <p className="text-xs font-semibold text-red-400">Erro no processamento</p>
           <p className="mt-1 text-xs text-red-300">{error}</p>
+          <button
+            type="button"
+            onClick={() => void handleStartAutoSplit()}
+            className="mt-2.5 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-500"
+          >
+            Tentar novamente
+          </button>
         </div>
       )}
     </div>
