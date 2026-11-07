@@ -806,46 +806,72 @@ async def _run_auto_split_task(
             suffix = "pinos" if payload.generate_connectors else "cores"
             base_dir = f"pieces/{payload.user_id}/{model_id}"
 
+            # Agrupa os resultados por cor (uma entrada por cor)
+            by_color: dict[int, list[AutoPlate]] = defaultdict(list)
+            for ap in outcome.plates:
+                by_color[ap.extruder_number].append(ap)
+
             plates_out: list[AutoPlateOutput] = []
             unified_meshes: list[trimesh.Trimesh] = []
             unified_colors: list[str] = []
             oversized = 0
 
-            for idx, ap in enumerate(outcome.plates, start=1):
+            for color_idx, (ext_num, ap_list) in enumerate(sorted(by_color.items()), start=1):
+                color_hex = ap_list[0].color_hex
+                safe_color = color_hex.replace("#", "")
+                all_color_meshes: list[trimesh.Trimesh] = []
+                all_part_labels: list[str] = []
+                has_any_pins = False
+                is_any_subdivided = False
+                color_fits = True
+
+                for ap in ap_list:
+                    all_color_meshes.extend(ap.meshes)
+                    all_part_labels.extend(ap.part_labels)
+                    if ap.has_connectors:
+                        has_any_pins = True
+                    if ap.is_subdivided:
+                        is_any_subdivided = True
+                    if not ap.fits_in_plate:
+                        color_fits = False
+
+                if not color_fits:
+                    oversized += 1
+
                 threemf_bytes = write_plate_3mf_bytes(
-                    meshes=ap.meshes,
-                    colors=[ap.color_hex] * len(ap.meshes),
-                    model_name=f"{safe_model_name}_mesa{idx}",
-                    snap_to_floor=False,  # já posicionadas e assentadas no empacotamento
+                    meshes=all_color_meshes,
+                    colors=[color_hex] * len(all_color_meshes),
+                    model_name=f"{safe_model_name}_cor{ext_num}_{safe_color}",
+                    snap_to_floor=False,
                 )
-                safe_color = ap.color_hex.replace("#", "")
-                storage_path = f"{base_dir}/{model_id}_auto_{suffix}_mesa{idx}_ext{ap.extruder_number}_{safe_color}.3mf"
+                storage_path = f"{base_dir}/{model_id}_auto_{suffix}_cor{ext_num}_{safe_color}.3mf"
                 upload_bytes(supabase, storage_path, threemf_bytes, content_type="model/3mf")
                 dl_url = create_download_url(supabase, storage_path, expires_in=3600)
 
-                if not ap.fits_in_plate:
-                    oversized += 1
-                label = f"Cor {ap.extruder_number}"
-                if ap.plate_index_in_color > 1 or ap.is_subdivided:
-                    label += f" — Mesa {ap.plate_index_in_color}"
+                concat_mesh = trimesh.util.concatenate(all_color_meshes) if all_color_meshes else trimesh.Trimesh()
+                extents = [round(float(e), 1) for e in concat_mesh.extents] if len(concat_mesh.vertices) else [0.0, 0.0, 0.0]
+
+                label = f"Cor {ext_num}"
+                if len(all_color_meshes) > 1:
+                    label += f" ({len(all_color_meshes)} partes)"
 
                 plates_out.append(
                     AutoPlateOutput(
-                        plate_number=idx,
-                        extruder_number=ap.extruder_number,
-                        color_hex=ap.color_hex,
+                        plate_number=color_idx,
+                        extruder_number=ext_num,
+                        color_hex=color_hex,
                         storage_path=storage_path,
                         download_url=dl_url,
-                        fits_in_plate=ap.fits_in_plate,
-                        extents_mm=ap.extents_mm,
+                        fits_in_plate=color_fits,
+                        extents_mm=extents,
                         label=label,
-                        is_subdivided=ap.is_subdivided,
-                        part_labels=ap.part_labels,
-                        has_connectors=ap.has_connectors,
+                        is_subdivided=is_any_subdivided,
+                        part_labels=all_part_labels,
+                        has_connectors=has_any_pins,
                     )
                 )
-                unified_meshes.append(center_and_ground(trimesh.util.concatenate(ap.meshes)))
-                unified_colors.append(ap.color_hex)
+                unified_meshes.append(center_and_ground(concat_mesh))
+                unified_colors.append(color_hex)
 
             unified_bytes = write_plate_3mf_bytes(
                 meshes=unified_meshes,

@@ -189,6 +189,10 @@ def run_auto_color_split(
             if len(comp.faces) == 0:
                 continue
             has_itf_pins = (pi, ci) in pinned_components
+            if _fits_plate(comp.extents, plate_x, plate_y, plate_z):
+                parts.append(AutoPart(comp, f"Cor {ext_num}", has_itf_pins, False))
+                continue
+
             oriented = _orient_piece_to_fit_if_needed(comp, plate_x, plate_y, plate_z)
             if _fits_plate(oriented.extents, plate_x, plate_y, plate_z):
                 parts.append(AutoPart(oriented, f"Cor {ext_num}", has_itf_pins, False))

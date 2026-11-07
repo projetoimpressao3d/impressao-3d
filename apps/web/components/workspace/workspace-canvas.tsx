@@ -268,12 +268,12 @@ export function WorkspaceCanvas({
     <div className="flex h-full w-full flex-col overflow-hidden">
       {/* Cena 3D */}
       <div className="relative flex-1 overflow-hidden">
-        {/* Barra flutuante superior para seleção de mesas pós-separação por cor */}
+        {/* Barra flutuante superior para seleção de cores pós-separação por cor */}
         {colorSplitResult && colorSplitResult.plates.length > 0 && (
           <div className="absolute left-3 right-3 top-3 z-10 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-zinc-700/80 bg-zinc-900/90 p-2.5 shadow-xl backdrop-blur-md">
             <div className="flex items-center gap-2">
-              <span className="flex items-center gap-1 text-xs font-semibold text-emerald-400">
-                <span>🖨️</span> Mesa Selecionada:
+              <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
+                <span>🎨</span> Cor Selecionada:
               </span>
               <select
                 value={
@@ -290,8 +290,7 @@ export function WorkspaceCanvas({
                 className="rounded-lg border border-zinc-700 bg-zinc-950 px-2.5 py-1 text-xs font-medium text-zinc-100 shadow-sm focus:border-emerald-500 focus:outline-none"
               >
                 <option value="all">
-                  🌐 Todas as Mesas ({colorSplitResult.plates.length} mesas
-                  enfileiradas)
+                  🌐 Todas as Cores (lado a lado cada uma em sua mesa)
                 </option>
                 {colorSplitResult.plates.map((plate, idx) => {
                   const dimsLabel =
@@ -300,8 +299,7 @@ export function WorkspaceCanvas({
                       : "";
                   return (
                     <option key={idx} value={String(idx)}>
-                      Mesa {plate.plate_number}:{" "}
-                      {plate.label || `Cor #${plate.color_hex}`}
+                      🎨 {plate.label || `Cor ${plate.extruder_number}`} ({plate.color_hex})
                       {dimsLabel}
                     </option>
                   );
@@ -324,7 +322,7 @@ export function WorkspaceCanvas({
                   }
                 }}
                 className="rounded-lg border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-xs font-medium text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
-                title="Mesa anterior"
+                title="Cor anterior"
               >
                 ◀ Ant
               </button>
@@ -343,7 +341,7 @@ export function WorkspaceCanvas({
                   }
                 }}
                 className="rounded-lg border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-xs font-medium text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
-                title="Próxima mesa"
+                title="Próxima cor"
               >
                 Próx ▶
               </button>
@@ -351,11 +349,11 @@ export function WorkspaceCanvas({
               {individualPlate && (
                 <a
                   href={individualPlate.download_url}
-                  download={`mesa-${individualPlate.plate_number}.3mf`}
+                  download={`cor-${individualPlate.extruder_number}.3mf`}
                   className="ml-1 inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white shadow hover:bg-emerald-500"
-                  title="Baixar 3MF desta mesa individual"
+                  title="Baixar 3MF desta cor"
                 >
-                  ⬇️ Baixar Mesa
+                  ⬇️ Baixar Cor
                 </a>
               )}
             </div>

@@ -58,7 +58,7 @@ class TestColorInterfaceDetection:
         assert itf.inscribed_radius == pytest.approx(20.0, abs=0.5)
 
     def test_ignores_interface_too_small(self) -> None:
-        top, bot = _painted_box((6.0, 6.0, 20.0))  # área 36 mm² < mínimo configurado
+        top, bot = _painted_box((4.0, 4.0, 20.0))  # área 16 mm² < mínimo configurado de 25 mm²
         assert find_color_interfaces([[top], [bot]]) == []
 
     def test_single_color_has_no_interfaces(self) -> None:

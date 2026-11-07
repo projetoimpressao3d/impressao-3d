@@ -346,6 +346,10 @@ export function WorkspaceShell({
     }
     if (preferredOption !== undefined) {
       setSmartSplitOption(preferredOption);
+    } else if (!smartSplitOption) {
+      setSmartSplitOption(
+        selectedModel.format === "3mf" ? "colors_pins" : "linear",
+      );
     }
   }
 
@@ -1144,7 +1148,7 @@ export function WorkspaceShell({
               selectedModel !== null && activeTab !== "smart-split"
             }
             onClickSmartSplitButton={() =>
-              handleNavigateToSmartSplit()
+              handleNavigateToSmartSplit("colors_pins")
             }
             active3DUrl={active3DUrl}
             colorSplitResult={colorSplitResult}
@@ -1190,6 +1194,9 @@ export function WorkspaceShell({
                 handleSelectModel(model);
                 setSelectModelModalOpen(false);
                 setActiveTab("smart-split");
+                setSmartSplitOption(
+                  model.format === "3mf" ? "colors_pins" : "linear",
+                );
               }}
               onGoToUpload={() => {
                 setSelectModelModalOpen(false);

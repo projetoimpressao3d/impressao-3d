@@ -33,17 +33,19 @@ def tolerance_for_material(material: str | None) -> float:
 # ---------------------------------------------------------------------------
 
 # Área mínima (mm²) da interface entre duas cores para receber um pino.
-COLOR_INTERFACE_MIN_AREA_MM2: float = 60.0
+# 25.0 mm² permite juntas funcionais (ex: ponta da cauda / chama de ~33 mm² e asas)
+# enquanto ignora dentes, olhos e detalhes decorativos pequenos (< 20 mm²).
+COLOR_INTERFACE_MIN_AREA_MM2: float = 25.0
 # Raio mínimo (mm) do maior círculo inscrito na interface (polylabel).
-COLOR_INTERFACE_MIN_INSCRIBED_RADIUS_MM: float = 3.0
+COLOR_INTERFACE_MIN_INSCRIBED_RADIUS_MM: float = 2.0
 # Fração mínima dos vértices da borda compartilhados com a cor vizinha.
 COLOR_INTERFACE_MIN_PARTNER_SHARE: float = 0.6
 # Desvio máximo (mm) da borda em relação ao plano médio — bordas muito curvas são ignoradas.
-COLOR_INTERFACE_MAX_PLANE_DEVIATION_MM: float = 3.0
+COLOR_INTERFACE_MAX_PLANE_DEVIATION_MM: float = 4.0
 # Faixa de raio do pino macho (mm).
 COLOR_INTERFACE_PIN_RADIUS_RANGE_MM: tuple[float, float] = (1.5, 4.0)
 # Faixa de altura do pino macho (mm) — profundidade de encaixe na peça vizinha.
-COLOR_INTERFACE_PIN_HEIGHT_RANGE_MM: tuple[float, float] = (4.0, 9.0)
+COLOR_INTERFACE_PIN_HEIGHT_RANGE_MM: tuple[float, float] = (3.5, 9.0)
 # Parede mínima (mm) ao redor do furo para não perfurar a superfície externa.
 COLOR_INTERFACE_MIN_WALL_MM: float = 1.0
 # Quantidade máxima de pinos entre o mesmo par de cores.

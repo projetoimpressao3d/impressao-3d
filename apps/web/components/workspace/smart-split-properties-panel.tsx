@@ -217,31 +217,7 @@ export function SmartSplitPropertiesPanel({
       </p>
 
       <div className="flex flex-col gap-2.5">
-        {/* OPÇÃO 1: Separação por cores */}
-        <button
-          type="button"
-          onClick={() => onSelectOption("colors_auto")}
-          className={`group rounded-xl border p-3.5 text-left transition-all ${
-            selectedOption === "colors_auto"
-              ? "border-emerald-500 bg-emerald-950/30 shadow-md ring-1 ring-emerald-500/40"
-              : "border-zinc-800 bg-zinc-950/60 hover:border-zinc-700 hover:bg-zinc-800/50"
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-400">
-              🎨 Separação por Cores
-            </span>
-            <span className="rounded border border-emerald-500/30 bg-emerald-950/60 px-2 py-0.5 text-[10px] font-medium text-emerald-300">
-              1 Bico / Sem AMS
-            </span>
-          </div>
-          <p className="mt-1 text-[11px] leading-snug text-zinc-400">
-            Identifica as cores do modelo 3MF, separa em mesas individuais e divide
-            automaticamente peças maiores que a mesa sem pinos.
-          </p>
-        </button>
-
-        {/* OPÇÃO 2: Separação por cores + Pinos de encaixe */}
+        {/* OPÇÃO 1: Separação por cores + Pinos de encaixe (DIFERENCIAL / RECOMENDADO) */}
         <button
           type="button"
           onClick={() => onSelectOption("colors_pins")}
@@ -262,6 +238,30 @@ export function SmartSplitPropertiesPanel({
           <p className="mt-1 text-[11px] leading-snug text-zinc-400">
             Separa as cores, divide peças que excedem a mesa e insere pinos mecânicos
             de encaixe (anti-rotação) nas juntas e interfaces.
+          </p>
+        </button>
+
+        {/* OPÇÃO 2: Separação por cores (sem pinos) */}
+        <button
+          type="button"
+          onClick={() => onSelectOption("colors_auto")}
+          className={`group rounded-xl border p-3.5 text-left transition-all ${
+            selectedOption === "colors_auto"
+              ? "border-emerald-500 bg-emerald-950/30 shadow-md ring-1 ring-emerald-500/40"
+              : "border-zinc-800 bg-zinc-950/60 hover:border-zinc-700 hover:bg-zinc-800/50"
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-400">
+              🎨 Separação por Cores
+            </span>
+            <span className="rounded border border-emerald-500/30 bg-emerald-950/60 px-2 py-0.5 text-[10px] font-medium text-emerald-300">
+              1 Bico / Sem AMS
+            </span>
+          </div>
+          <p className="mt-1 text-[11px] leading-snug text-zinc-400">
+            Identifica as cores do modelo 3MF, separa em mesas individuais e divide
+            automaticamente peças maiores que a mesa sem pinos (faces lisas para colagem).
           </p>
         </button>
 

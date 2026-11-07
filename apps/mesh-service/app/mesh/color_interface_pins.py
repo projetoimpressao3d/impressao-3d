@@ -35,7 +35,7 @@ from app.mesh import connector_config as cfg
 
 logger = logging.getLogger(__name__)
 
-_SHARED_VERTEX_EPS_MM = 1e-3
+_SHARED_VERTEX_EPS_MM = 0.05
 _PROBE_INSIDE_MIN_FRACTION = 0.97
 _PIN_ROOT_MIN_FRACTION = 0.55
 _PIN_ROOT_EMBED_MM = 1.0
@@ -335,7 +335,7 @@ def apply_color_interface_pins(
         b_key = (itf.partner_piece, b_comp)
 
         ma, mb = manifold_of(a_key), manifold_of(b_key)
-        if ma is None or mb is None:
+        if ma is None and mb is None:
             continue
 
         r_pin = float(np.clip(itf.inscribed_radius * 0.45, r_min, r_max_pin))
@@ -348,30 +348,32 @@ def apply_color_interface_pins(
         h_pin = float(np.clip(r_pin * 2.2, h_min, h_max))
         h_sock = h_pin + 0.5
 
-        # Tenta furo no maior volume primeiro (mais material para hospedar o encaixe).
+        # Tenta colocar o pino no menor volume e furo no maior volume
+        vol_a = ma.volume() if ma is not None else 1e9
+        vol_b = mb.volume() if mb is not None else 1e9
         options: list[tuple[tuple[int, int], tuple[int, int]]] = (
             [(a_key, b_key), (b_key, a_key)]
-            if mb.volume() >= ma.volume()
+            if vol_b >= vol_a
             else [(b_key, a_key), (a_key, b_key)]
         )
 
         applied = False
         for pin_key, host_key in options:
             m_pin_owner, m_host = manifold_of(pin_key), manifold_of(host_key)
-            if m_pin_owner is None or m_host is None:
-                continue
             for sign in (1.0, -1.0):
                 d = itf.normal * sign
-                # Furo (com parede mínima ao redor e no fundo) precisa caber dentro da hospedeira.
-                probe = _cylinder(itf.center, d, h_sock + wall, r_sock + wall, r_sock + wall, segments)
-                if _inside_fraction(m_host, probe) < _PROBE_INSIDE_MIN_FRACTION:
-                    continue
-                # A raiz do pino precisa estar ancorada na peça dona do pino.
-                root = _cylinder(
-                    itf.center - d * _PIN_ROOT_EMBED_MM, d, _PIN_ROOT_EMBED_MM, r_pin, r_pin, segments
-                )
-                if _inside_fraction(m_pin_owner, root) < _PIN_ROOT_MIN_FRACTION:
-                    continue
+                # Furo precisa caber dentro da hospedeira
+                if m_host is not None:
+                    probe = _cylinder(itf.center, d, h_sock + wall, r_sock + wall, r_sock + wall, segments)
+                    if _inside_fraction(m_host, probe) < _PROBE_INSIDE_MIN_FRACTION:
+                        continue
+                # A raiz do pino precisa estar ancorada na peça dona
+                if m_pin_owner is not None:
+                    root = _cylinder(
+                        itf.center - d * _PIN_ROOT_EMBED_MM, d, _PIN_ROOT_EMBED_MM, r_pin, r_pin, segments
+                    )
+                    if _inside_fraction(m_pin_owner, root) < _PIN_ROOT_MIN_FRACTION:
+                        continue
 
                 pin = _cylinder(
                     itf.center - d * _PIN_ROOT_EMBED_MM,
@@ -382,20 +384,30 @@ def apply_color_interface_pins(
                     segments,
                 )
                 socket = _cylinder(itf.center - d * 0.3, d, h_sock + 0.3, r_sock, r_sock, segments)
-                new_owner = m_pin_owner + pin
-                new_host = m_host - socket
-                if new_owner.volume() <= 0 or new_host.volume() <= 0:
-                    continue
 
-                cache[pin_key] = new_owner
-                cache[host_key] = new_host
+                if m_pin_owner is not None:
+                    new_owner = m_pin_owner + pin
+                    if new_owner.volume() <= 0:
+                        continue
+                    cache[pin_key] = new_owner
+                else:
+                    pin_tri = _to_trimesh(pin)
+                    curr = closed_components[pin_key[0]][pin_key[1]]
+                    closed_components[pin_key[0]][pin_key[1]] = trimesh.util.concatenate([curr, pin_tri])
+
+                if m_host is not None:
+                    new_host = m_host - socket
+                    if new_host.volume() <= 0:
+                        continue
+                    cache[host_key] = new_host
+
                 dirty.update({pin_key, host_key})
                 pins_by_piece[pin_key[0]] += 1
                 pins_by_piece[host_key[0]] += 1
                 created += 1
                 applied = True
                 logger.info(
-                    "Pino entre cores: cor %d -> cor %d r_pin=%.2f h=%.1f área=%.0fmm²",
+                    "Pino entre cores criado: cor %d -> cor %d r_pin=%.2f h=%.1f área=%.0fmm²",
                     pin_key[0] + 1,
                     host_key[0] + 1,
                     r_pin,

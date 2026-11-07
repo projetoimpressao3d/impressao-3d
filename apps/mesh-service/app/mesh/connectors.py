@@ -421,7 +421,13 @@ def slice_and_cap_with_connectors(
 
                         if avail_depth >= 3.2:
                             target_h = float(np.clip(r_pin * 1.9, 3.8, 9.5))
-                            socket_in_bottom = depth_bot >= depth_top
+                            # Em cortes horizontais (ex: cintura / tronco com n[2] dominante), o pino macho
+                            # deve sair da peça inferior apontando para cima (+Z) e a fêmea (furo) deve
+                            # entrar na peça superior pela base, garantindo assentamento plano em Z=0.
+                            if abs(n[2]) > 0.7:
+                                socket_in_bottom = n[2] < 0
+                            else:
+                                socket_in_bottom = depth_bot >= depth_top
                             max_h_sock = (depth_bot if socket_in_bottom else depth_top) * 0.72
                             h_sock = float(np.clip(target_h + 0.5, 3.5, max(3.6, max_h_sock)))
                             h_pin = h_sock - 0.5
