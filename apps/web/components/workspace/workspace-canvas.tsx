@@ -11,6 +11,7 @@ import type {
 } from "@/types/database";
 import type { ModelDimensions } from "@/components/viewer/model-viewer";
 import type { ColorGroup } from "@/components/viewer/threemf-colored-object";
+import { useThreeMFParsed } from "@/components/viewer/threemf-colored-object";
 import type { ColorSplitResult } from "@/components/split/color-split-panel";
 
 const ViewerScene = dynamic(
@@ -261,8 +262,15 @@ export function WorkspaceCanvas({
       ? checkFit(effectiveDims, selectedPlate)
       : null;
 
+  const postSplitUrl = colorSplitResult ? active3DUrl : null;
+  const { result: postSplitParsed } = useThreeMFParsed(postSplitUrl ?? "");
+
   const effectiveGroups =
-    colorGroups.length > 0 ? colorGroups : internalColorGroups;
+    colorSplitResult && postSplitParsed && postSplitParsed.groups.length > 0
+      ? postSplitParsed.groups
+      : colorGroups.length > 0
+      ? colorGroups
+      : internalColorGroups;
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
@@ -273,7 +281,7 @@ export function WorkspaceCanvas({
           <div className="absolute left-3 right-3 top-3 z-10 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-zinc-700/80 bg-zinc-900/90 p-2.5 shadow-xl backdrop-blur-md">
             <div className="flex items-center gap-2">
               <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
-                <span>🎨</span> Cor Selecionada:
+                <span>🎨</span> Mesa / Cor Selecionada:
               </span>
               <select
                 value={
@@ -299,7 +307,7 @@ export function WorkspaceCanvas({
                       : "";
                   return (
                     <option key={idx} value={String(idx)}>
-                      🎨 {plate.label || `Cor ${plate.extruder_number}`} ({plate.color_hex})
+                      🎨 {plate.label || `Mesa ${plate.plate_number}`} ({plate.color_hex})
                       {dimsLabel}
                     </option>
                   );
@@ -322,7 +330,7 @@ export function WorkspaceCanvas({
                   }
                 }}
                 className="rounded-lg border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-xs font-medium text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
-                title="Cor anterior"
+                title="Mesa anterior"
               >
                 ◀ Ant
               </button>
@@ -341,7 +349,7 @@ export function WorkspaceCanvas({
                   }
                 }}
                 className="rounded-lg border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-xs font-medium text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
-                title="Próxima cor"
+                title="Próxima mesa"
               >
                 Próx ▶
               </button>
@@ -352,13 +360,13 @@ export function WorkspaceCanvas({
                   download={
                     individualPlate.file_name ??
                     (colorSplitResult.unified_file_name
-                      ? `${colorSplitResult.unified_file_name.replace(/\.3mf$/i, "")}_cor_${individualPlate.extruder_number}.3mf`
-                      : `${model?.name || "modelo"}_cor_${individualPlate.extruder_number}.3mf`)
+                      ? `${colorSplitResult.unified_file_name.replace(/\.3mf$/i, "")}_mesa_${individualPlate.plate_number}.3mf`
+                      : `${model?.name || "modelo"}_mesa_${individualPlate.plate_number}.3mf`)
                   }
                   className="ml-1 inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white shadow hover:bg-emerald-500"
-                  title="Baixar 3MF desta cor"
+                  title="Baixar 3MF desta mesa"
                 >
-                  ⬇️ Baixar Cor
+                  ⬇️ Baixar Mesa
                 </a>
               )}
             </div>
@@ -416,8 +424,10 @@ export function WorkspaceCanvas({
             colorPreviewMode={effectiveColorPreviewMode}
             colorGroups={effectiveGroups}
             onGroupsParsed={(groups) => {
-              setInternalColorGroups(groups);
-              onGroupsParsed?.(groups);
+              if (!isIndividualPlateSelected) {
+                setInternalColorGroups(groups);
+                onGroupsParsed?.(groups);
+              }
             }}
           />
         ) : (

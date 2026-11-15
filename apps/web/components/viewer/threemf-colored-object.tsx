@@ -736,15 +736,17 @@ function parseStandardMultiObject(objXml: string): ParseResult | null {
   }
 
   const objRe = /<object\s+([^>]*?)>([\s\S]*?)<\/object>/g;
-  const objects: Array<{ id: string; pindex: number; block: string }> = [];
+  const objects: Array<{ id: string; pindex: number; name?: string; block: string }> = [];
   for (const m of objXml.matchAll(objRe)) {
     const attrs = m[1];
     const block = m[2];
     const idMatch = attrs.match(/id="(\d+)"/);
     const pindexMatch = attrs.match(/pindex="(\d+)"/);
+    const nameMatch = attrs.match(/name="([^"]+)"/);
     const id = idMatch ? idMatch[1] : "0";
     const pindex = pindexMatch ? parseInt(pindexMatch[1]) : 0;
-    objects.push({ id, pindex, block });
+    const name = nameMatch ? nameMatch[1] : undefined;
+    objects.push({ id, pindex, name, block });
   }
 
   if (objects.length === 0) return null;
@@ -754,6 +756,7 @@ function parseStandardMultiObject(objXml: string): ParseResult | null {
     colorHex: string;
     geo: THREE.BufferGeometry;
     positions: Float32Array;
+    name?: string;
   }
 
   const parts: ObjectPart[] = [];
@@ -765,7 +768,7 @@ function parseStandardMultiObject(objXml: string): ParseResult | null {
     if (pos.length === 0) continue;
     const colorHex = obj.pindex < baseColors.length ? baseColors[obj.pindex] : "#888888";
     const geo = buildGeoFromPositions(pos);
-    parts.push({ pindex: obj.pindex, colorHex, geo, positions: pos });
+    parts.push({ pindex: obj.pindex, colorHex, geo, positions: pos, name: obj.name });
 
     for (let i = 0; i < pos.length; i += 3) {
       const x = pos[i], y = pos[i + 1], z = pos[i + 2];
@@ -793,7 +796,7 @@ function parseStandardMultiObject(objXml: string): ParseResult | null {
     groups.push({
       extruderIndex: p.pindex,
       colorHex: p.colorHex,
-      label: `Mesa ${i + 1} (Extruder ${p.pindex + 1})`,
+      label: p.name || `Mesa ${i + 1} (Extruder ${p.pindex + 1})`,
       geometry: centeredGeo,
       parts: [centeredGeo],
       isBase: i === 0,

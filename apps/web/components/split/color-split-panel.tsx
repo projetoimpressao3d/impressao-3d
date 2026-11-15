@@ -362,10 +362,10 @@ export function ColorSplitPanel({
             </a>
           )}
 
-          {/* Lista por cor */}
+          {/* Lista por mesa */}
           <div className="space-y-2">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
-              Cores do Modelo Geradas:
+              Mesas de Impressão Geradas ({splitResult.plates.length}):
             </p>
             {splitResult.plates.map((plate, idx) => {
               const sizeStr = plate.extents_mm.map(fmm).join(" × ") + " mm";
@@ -436,7 +436,7 @@ export function ColorSplitPanel({
                       }
                       onClick={(e) => e.stopPropagation()}
                       className="rounded bg-emerald-600 px-2 py-1 text-[11px] font-bold text-white transition-colors hover:bg-emerald-500"
-                      title="Baixar .3mf desta cor"
+                      title="Baixar .3mf desta mesa"
                     >
                       ⬇
                     </a>

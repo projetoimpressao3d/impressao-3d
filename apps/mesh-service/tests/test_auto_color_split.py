@@ -218,8 +218,9 @@ async def test_run_auto_split_task_completes_successfully() -> None:
     res = task_state["result"]
     assert res["model_id"] == "test-model-123"
     assert res["unified_file_name"] == "charizard_cores.3mf"
-    assert len(res["plates"]) == 2
+    assert len(res["plates"]) >= 2
     for p in res["plates"]:
         assert p["file_name"].startswith("charizard_cores_cor_")
         assert p["file_name"].endswith(".3mf")
+        assert p["fits_in_plate"] is True
 

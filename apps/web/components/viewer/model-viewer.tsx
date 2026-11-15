@@ -889,7 +889,11 @@ export function ModelViewer({
               onGeometryReady={handleGeometryReady}
               colorPreviewMode={effectiveColorPreviewMode}
               colorGroups={colorGroups}
-              onGroupsParsed={setColorGroups}
+              onGroupsParsed={(groups) => {
+                if (!isIndividualPlateSelected) {
+                  setColorGroups(groups);
+                }
+              }}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-gray-500">

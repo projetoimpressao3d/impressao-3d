@@ -815,88 +815,70 @@ async def _run_auto_split_task(
             safe_model_name = sanitize_storage_key(raw_name).strip("._-") or "modelo"
             base_dir = f"pieces/{payload.user_id}/{model_id}"
 
-            # Agrupa os resultados por cor (uma entrada por cor)
-            by_color: dict[int, list[AutoPlate]] = defaultdict(list)
-            for ap in outcome.plates:
-                by_color[ap.extruder_number].append(ap)
+            from collections import Counter
+            plates_per_color = Counter(ap.extruder_number for ap in outcome.plates)
 
             plates_out: list[AutoPlateOutput] = []
             unified_meshes: list[trimesh.Trimesh] = []
             unified_colors: list[str] = []
+            unified_names: list[str] = []
             oversized = 0
 
-            for color_idx, (ext_num, ap_list) in enumerate(sorted(by_color.items()), start=1):
-                color_hex = ap_list[0].color_hex
-                all_color_meshes: list[trimesh.Trimesh] = []
-                all_part_labels: list[str] = []
-                has_any_pins = False
-                is_any_subdivided = False
-                color_fits = True
+            for plate_idx, ap in enumerate(outcome.plates, start=1):
+                ext_num = ap.extruder_number
+                color_hex = ap.color_hex
+                total_for_color = plates_per_color[ext_num]
 
-                for ap in ap_list:
-                    all_color_meshes.extend(ap.meshes)
-                    all_part_labels.extend(ap.part_labels)
-                    if ap.has_connectors:
-                        has_any_pins = True
-                    if ap.is_subdivided:
-                        is_any_subdivided = True
-                    if not ap.fits_in_plate:
-                        color_fits = False
-
-                if not color_fits:
+                if not ap.fits_in_plate:
                     oversized += 1
 
-                if len(all_color_meshes) > 1 and len(ap_list) > 1:
-                    # Organiza todas as sub-peças da cor lado a lado em Z=0 sem sobreposição
-                    sum_w = sum(float(m.extents[0]) for m in all_color_meshes) + 50.0
-                    sum_d = sum(float(m.extents[1]) for m in all_color_meshes) + 50.0
-                    packed_meshes, _, _ = pack_components_2d(
-                        all_color_meshes,
-                        max(plate_x * 2.0, sum_w),
-                        max(plate_y * 2.0, sum_d),
-                        plate_z * 2.0,
-                        margin=2.0,
-                        spacing=5.0,
-                        snap_to_floor=True,
-                    )
-                    all_color_meshes = packed_meshes
+                if total_for_color > 1:
+                    fname = f"{safe_model_name}_cor_{ext_num}_mesa_{ap.plate_index_in_color}.3mf"
+                    clean_parts = [
+                        p.replace(f"Cor {ext_num} - ", "").strip()
+                        for p in ap.part_labels
+                    ]
+                    parts_info = f" ({', '.join(clean_parts)})" if clean_parts and clean_parts != [""] else ""
+                    label = f"Cor {ext_num} — Mesa {ap.plate_index_in_color}{parts_info}"
+                else:
+                    fname = f"{safe_model_name}_cor_{ext_num}.3mf"
+                    if len(ap.meshes) > 1:
+                        label = f"Cor {ext_num} ({len(ap.meshes)} partes)"
+                    else:
+                        label = f"Cor {ext_num}"
 
-                color_fname = f"{safe_model_name}_cor_{ext_num}.3mf"
+                storage_path = f"{base_dir}/{fname}"
                 threemf_bytes = write_plate_3mf_bytes(
-                    meshes=all_color_meshes,
-                    colors=[color_hex] * len(all_color_meshes),
-                    model_name=f"{safe_model_name}_cor_{ext_num}",
+                    meshes=ap.meshes,
+                    colors=[color_hex] * len(ap.meshes),
+                    model_name=f"{safe_model_name}_cor_{ext_num}_mesa_{ap.plate_index_in_color}",
                     snap_to_floor=False,
                 )
-                storage_path = f"{base_dir}/{color_fname}"
                 upload_bytes(supabase, storage_path, threemf_bytes, content_type="model/3mf")
-                dl_url = create_download_url(supabase, storage_path, expires_in=3600, download_filename=color_fname)
-
-                concat_mesh = trimesh.util.concatenate(all_color_meshes) if all_color_meshes else trimesh.Trimesh()
-                extents = [round(float(e), 1) for e in concat_mesh.extents] if len(concat_mesh.vertices) else [0.0, 0.0, 0.0]
-
-                label = f"Cor {ext_num}"
-                if len(all_color_meshes) > 1:
-                    label += f" ({len(all_color_meshes)} partes)"
+                dl_url = create_download_url(supabase, storage_path, expires_in=3600, download_filename=fname)
 
                 plates_out.append(
                     AutoPlateOutput(
-                        plate_number=color_idx,
+                        plate_number=plate_idx,
                         extruder_number=ext_num,
                         color_hex=color_hex,
                         storage_path=storage_path,
                         download_url=dl_url,
-                        fits_in_plate=color_fits,
-                        extents_mm=extents,
+                        fits_in_plate=ap.fits_in_plate,
+                        extents_mm=ap.extents_mm,
                         label=label,
-                        is_subdivided=is_any_subdivided,
-                        part_labels=all_part_labels,
-                        has_connectors=has_any_pins,
-                        file_name=color_fname,
+                        is_subdivided=ap.is_subdivided,
+                        part_labels=ap.part_labels,
+                        has_connectors=ap.has_connectors,
+                        file_name=fname,
                     )
                 )
-                unified_meshes.append(center_and_ground(concat_mesh))
+
+                # Para o arquivo .3MF unificado completo (um objeto por mesa)
+                plate_mesh = trimesh.util.concatenate(ap.meshes) if len(ap.meshes) > 1 else ap.meshes[0]
+                unified_meshes.append(center_and_ground(plate_mesh))
                 unified_colors.append(color_hex)
+                unified_names.append(label)
 
             unified_fname = f"{safe_model_name}.3mf"
             unified_bytes = write_plate_3mf_bytes(
@@ -904,6 +886,7 @@ async def _run_auto_split_task(
                 colors=unified_colors,
                 model_name=safe_model_name,
                 snap_to_floor=True,
+                names=unified_names,
             )
             unified_path = f"{base_dir}/{unified_fname}"
             upload_bytes(supabase, unified_path, unified_bytes, content_type="model/3mf")

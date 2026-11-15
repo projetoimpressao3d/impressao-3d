@@ -43,6 +43,7 @@ def _mesh_to_model_xml(
     colors: list,
     model_name: str = "model",
     snap_to_floor: bool = True,
+    names: list[str] | None = None,
 ) -> str:
     """
     Gera o XML 3D/3dmodel.model com um objeto por malha.
@@ -72,7 +73,8 @@ def _mesh_to_model_xml(
         color_idx = unique_colors.index(color) if color in unique_colors else 0
         working_mesh = _apply_snap_to_floor(mesh) if snap_to_floor else mesh
 
-        lines.append(f'<object id="{obj_id}" type="model" pid="1" pindex="{color_idx}">')
+        name_attr = f' name="{names[obj_id - 2]}"' if names and (obj_id - 2) < len(names) else ""
+        lines.append(f'<object id="{obj_id}" type="model"{name_attr} pid="1" pindex="{color_idx}">')
         lines.append('<mesh>')
         lines.append('<vertices>')
         for v in working_mesh.vertices:
@@ -101,11 +103,12 @@ def write_plate_3mf(
     output_path,
     model_name: str = "plate",
     snap_to_floor: bool = True,
+    names: list[str] | None = None,
 ):
     """Gera um arquivo .3mf com as malhas fornecidas."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    model_xml = _mesh_to_model_xml(meshes, colors, model_name, snap_to_floor=snap_to_floor)
+    model_xml = _mesh_to_model_xml(meshes, colors, model_name, snap_to_floor=snap_to_floor, names=names)
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("[Content_Types].xml", CONTENT_TYPES_XML)
         zf.writestr("_rels/.rels", RELS_XML)
@@ -119,13 +122,14 @@ def write_plate_3mf_bytes(
     colors: list,
     model_name: str = "plate",
     snap_to_floor: bool = True,
+    names: list[str] | None = None,
 ) -> bytes:
     """
     Gera o .3mf em memoria (bytes) sem gravar em disco.
     snap_to_floor=True  -> encosta a peca na base Z=0
     snap_to_floor=False -> mantem posicao original
     """
-    model_xml = _mesh_to_model_xml(meshes, colors, model_name, snap_to_floor=snap_to_floor)
+    model_xml = _mesh_to_model_xml(meshes, colors, model_name, snap_to_floor=snap_to_floor, names=names)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("[Content_Types].xml", CONTENT_TYPES_XML)
