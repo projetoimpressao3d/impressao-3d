@@ -184,6 +184,9 @@ export function WorkspaceCanvas({
     });
   }, []);
 
+  const postSplitUrl = model && colorSplitResult ? active3DUrl : null;
+  const { result: postSplitParsed } = useThreeMFParsed(postSplitUrl ?? "");
+
   if (!model) {
     return (
       <div className="z-0 flex flex-col items-center justify-center text-center">
@@ -261,9 +264,6 @@ export function WorkspaceCanvas({
     effectiveDims && selectedPlate
       ? checkFit(effectiveDims, selectedPlate)
       : null;
-
-  const postSplitUrl = colorSplitResult ? active3DUrl : null;
-  const { result: postSplitParsed } = useThreeMFParsed(postSplitUrl ?? "");
 
   const effectiveGroups =
     colorSplitResult && postSplitParsed && postSplitParsed.groups.length > 0
