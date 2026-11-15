@@ -19,33 +19,50 @@ def find_boundary_loops(mesh: trimesh.Trimesh) -> list[list[int]]:
         mask2 = (mesh.faces[:, 1] == u) & (mesh.faces[:, 2] == v)
         mask3 = (mesh.faces[:, 2] == u) & (mesh.faces[:, 0] == v)
         if np.any(mask1 | mask2 | mask3):
-            boundary_directed.append((u, v))
+            boundary_directed.append((int(u), int(v)))
         else:
-            boundary_directed.append((v, u))
+            boundary_directed.append((int(v), int(u)))
     if not boundary_directed:
         return []
+
     from collections import defaultdict
     adj = defaultdict(list)
     for u, v in boundary_directed:
         adj[u].append(v)
+
     visited_edges = set()
     loops: list[list[int]] = []
+
+    # Decomposição em ciclos simples tolerante a vértices compartilhados (figura-8 / laços em 'pinch')
     for start_u, start_v in boundary_directed:
         if (start_u, start_v) in visited_edges:
             continue
-        loop = [start_u]
-        visited_edges.add((start_u, start_v))
+        path = [start_u]
+        pos_in_path = {start_u: 0}
         curr = start_v
-        while curr != start_u:
-            loop.append(curr)
+        visited_edges.add((start_u, start_v))
+
+        guard = 0
+        max_guard = len(boundary_directed) * 2 + 10
+        while guard < max_guard:
+            guard += 1
+            if curr in pos_in_path:
+                idx = pos_in_path[curr]
+                cycle = path[idx:]
+                if len(cycle) >= 3:
+                    loops.append(cycle)
+                path = path[:idx]
+                pos_in_path = {v: i for i, v in enumerate(path)}
+
             next_candidates = [n for n in adj[curr] if (curr, n) not in visited_edges]
             if not next_candidates:
                 break
             next_v = next_candidates[0]
             visited_edges.add((curr, next_v))
+            path.append(curr)
+            pos_in_path[curr] = len(path) - 1
             curr = next_v
-        if curr == start_u and len(loop) >= 3:
-            loops.append(loop)
+
     return loops
 
 def _cap_loop_centroid(vertices: np.ndarray, loop: list[int]) -> tuple[np.ndarray, np.ndarray]:

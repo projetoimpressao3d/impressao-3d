@@ -155,7 +155,11 @@ def extract_2d_polygons_from_segments(
         coords = list(ls.coords)
         if len(coords) >= 3:
             if not ls.is_ring:
-                coords.append(coords[0])
+                # Apenas fecha se a distância entre os pontos finais for pequena (<= 1.5mm)
+                # para evitar criar triângulos gigantes/espinhos em segmentos abertos
+                gap = float(np.linalg.norm(np.array(coords[0]) - np.array(coords[-1])))
+                if gap <= 1.5:
+                    coords.append(coords[0])
             if len(coords) >= 4 and coords[0] == coords[-1]:
                 try:
                     p = Polygon(coords).buffer(0)

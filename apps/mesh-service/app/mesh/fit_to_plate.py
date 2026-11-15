@@ -99,73 +99,77 @@ def _cut_appendage_localized_trimesh(
     connector_pin_shape: str,
 ) -> tuple[trimesh.Trimesh | None, trimesh.Trimesh, int]:
     """
-    Executa um corte planar LOCALIZADO (Bounded Cut) diretamente na malha Trimesh original:
-    Apenas os triângulos dentro da máscara dilatada do apêndice (`reg_mask`) são seccionados
-    pelo plano da junta, garantindo que o plano nunca atinja outras partes do modelo
-    e adicionando conectores macho/fêmea via `polylabel`.
+    Executa corte planar do apêndice diretamente na malha fechada inteira,
+    sem recortar máscaras de voxels prévias (o que gerava bordas serrilhadas, espinhos
+    e furos nas costas/juntas).
+    
+    1. Passa o plano pela raiz do apêndice, gerando duas metades (lado do apêndice vs lado do tronco).
+    2. Identifica o componente conexo do apêndice associado a reg_mask.
+    3. Qualquer outra parte do modelo decepada acidentalmente pelo plano infinito é re-soldada intacta ao tronco.
+    4. Aplica tampamento 2D e conectores macho/fêmea diretamente na seção transversal limpa.
     """
-    dil = ndi.binary_dilation(reg_mask, iterations=5)
-    c_f = body_mesh.triangles_center
-    idx = np.clip(
-        np.floor((c_f - vm_origin) / vm_pitch).astype(int),
-        0,
-        np.array(dil.shape) - 1,
-    )
-    in_zone = dil[idx[:, 0], idx[:, 1], idx[:, 2]]
-    in_indices = np.where(in_zone)[0]
-    out_indices = np.where(~in_zone)[0]
-
-    if len(in_indices) < 30 or len(out_indices) < 30:
+    n = np.asarray(plane_normal, dtype=np.float64)
+    n_len = float(np.linalg.norm(n))
+    if n_len < 1e-6:
         return None, body_mesh, 0
+    n = n / n_len
+    o = np.asarray(plane_origin, dtype=np.float64)
 
-    sub_in = body_mesh.submesh([in_indices], append=True)
-    sub_out = body_mesh.submesh([out_indices], append=True)
+    # Identificar centróide dos voxels do apêndice para verificar orientação da normal
+    reg_indices = np.argwhere(reg_mask)
+    if len(reg_indices) < 20:
+        return None, body_mesh, 0
+    reg_center = vm_origin + (reg_indices.mean(0) + 0.5) * vm_pitch
 
-    part_raw, rest_in_raw, pins = slice_and_cap_with_connectors(
-        sub_in,
-        plane_origin=plane_origin,
-        plane_normal=plane_normal,
+    # Garantir que +n aponta na direção do apêndice (para longe do tronco)
+    if np.dot(reg_center - o, n) < 0:
+        n = -n
+
+    # Fatiar a malha inteira fechada usando slice_and_cap_with_connectors
+    part_half, body_half, pins = slice_and_cap_with_connectors(
+        body_mesh,
+        plane_origin=o,
+        plane_normal=n,
         generate_connectors=generate_connectors,
         tolerance_mm=connector_tolerance_mm,
         pin_shape=connector_pin_shape,
-        reintegrate_grazed_islands=True,
+        reintegrate_grazed_islands=False,
     )
 
-    if len(part_raw.faces) < 30 or len(rest_in_raw.faces) == 0:
+    if len(part_half.faces) == 0 or len(body_half.faces) == 0:
         return None, body_mesh, 0
 
-    part_clusters = split_spatially_disconnected(part_raw, gap_mm=1.2, min_speckle_faces=30)
-    if not part_clusters:
+    # Separar part_half em componentes conexos
+    part_comps = split_spatially_disconnected(part_half, gap_mm=0.5, min_speckle_faces=25)
+    if not part_comps:
         return None, body_mesh, 0
 
-    part_main = part_clusters[0]
-    extra_for_body = part_clusters[1:] if len(part_clusters) > 1 else []
+    # Determinar qual componente conexo é o verdadeiro apêndice (o mais próximo ou mais sobreposto a reg_center)
+    best_comp_idx = 0
+    best_dist = float("inf")
+    for idx, comp in enumerate(part_comps):
+        comp_center = comp.vertices.mean(0)
+        d = float(np.linalg.norm(comp_center - reg_center))
+        if d < best_dist:
+            best_dist = d
+            best_comp_idx = idx
 
-    new_body = trimesh.util.concatenate([sub_out, rest_in_raw] + extra_for_body)
-    new_body.merge_vertices()
+    appendage_comp = part_comps[best_comp_idx]
+    other_comps = [c for i, c in enumerate(part_comps) if i != best_comp_idx]
 
-    body_clusters = split_spatially_disconnected(new_body, gap_mm=1.2, min_speckle_faces=35)
-    if len(body_clusters) > 1:
-        main_body = body_clusters[0]
-        tree_part = cKDTree(part_main.vertices)
-        tree_body = cKDTree(main_body.vertices)
-        kept_body = [main_body]
-        attach_to_part = []
-        for bc in body_clusters[1:]:
-            d_part = float(np.min(tree_part.query(bc.vertices, k=1)[0]))
-            d_body = float(np.min(tree_body.query(bc.vertices, k=1)[0]))
-            if d_part < d_body:
-                attach_to_part.append(bc)
-            else:
-                kept_body.append(bc)
-        if attach_to_part:
-            part_main = trimesh.util.concatenate([part_main] + attach_to_part)
-            part_main.merge_vertices()
-        new_body = trimesh.util.concatenate(kept_body)
+    # Reintegrar componentes não-apêndice de volta ao corpo principal
+    if other_comps:
+        new_body = trimesh.util.concatenate([body_half] + other_comps)
         new_body.merge_vertices()
+    else:
+        new_body = body_half
 
-    part_main.metadata["pins_created"] = pins
-    return part_main, new_body, pins
+    # Fechar quaisquer eventuais micro-furos residuais de borda em ambas as peças
+    appendage_comp = close_color_piece(appendage_comp)
+    new_body = close_color_piece(new_body)
+
+    appendage_comp.metadata["pins_created"] = pins
+    return appendage_comp, new_body, pins
 
 
 def _try_anatomical_appendage_split(
