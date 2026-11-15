@@ -23,6 +23,7 @@ export interface PlateOutput {
   is_subdivided?: boolean;
   part_labels?: string[];
   has_connectors?: boolean;
+  file_name?: string | null;
 }
 
 export interface ColorSplitResult {
@@ -427,7 +428,12 @@ export function ColorSplitPanel({
                     </button>
                     <a
                       href={plate.download_url}
-                      download
+                      download={
+                        plate.file_name ??
+                        (splitResult.unified_file_name
+                          ? `${splitResult.unified_file_name.replace(/\.3mf$/i, "")}_cor_${plate.extruder_number}.3mf`
+                          : `cor-${plate.extruder_number}.3mf`)
+                      }
                       onClick={(e) => e.stopPropagation()}
                       className="rounded bg-emerald-600 px-2 py-1 text-[11px] font-bold text-white transition-colors hover:bg-emerald-500"
                       title="Baixar .3mf desta cor"

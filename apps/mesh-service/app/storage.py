@@ -31,12 +31,19 @@ def sanitize_storage_key(path: str) -> str:
     return safe
 
 
-def create_download_url(supabase: Client, storage_path: str, expires_in: int = 300) -> str:
+def create_download_url(
+    supabase: Client,
+    storage_path: str,
+    expires_in: int = 300,
+    download_filename: str | None = None,
+) -> str:
     """Gera URL assinada de download do Supabase Storage (bucket 'models')."""
     clean_path = sanitize_storage_key(storage_path)
+    options = {"download": download_filename} if download_filename else None
     response = supabase.storage.from_("models").create_signed_url(
         path=clean_path,
         expires_in=expires_in,
+        options=options,
     )
     # supabase-py 2.x retorna dict com 'signedURL'
     if not response or "signedURL" not in response:

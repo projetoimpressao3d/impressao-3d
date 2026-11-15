@@ -349,7 +349,12 @@ export function WorkspaceCanvas({
               {individualPlate && (
                 <a
                   href={individualPlate.download_url}
-                  download={`cor-${individualPlate.extruder_number}.3mf`}
+                  download={
+                    individualPlate.file_name ??
+                    (colorSplitResult.unified_file_name
+                      ? `${colorSplitResult.unified_file_name.replace(/\.3mf$/i, "")}_cor_${individualPlate.extruder_number}.3mf`
+                      : `${model?.name || "modelo"}_cor_${individualPlate.extruder_number}.3mf`)
+                  }
                   className="ml-1 inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white shadow hover:bg-emerald-500"
                   title="Baixar 3MF desta cor"
                 >

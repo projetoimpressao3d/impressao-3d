@@ -90,6 +90,7 @@ class PlateOutput(BaseModel):
     extents_mm: list[float]
     label: str | None = None
     is_subdivided: bool = False
+    file_name: str | None = None
 
 
 
@@ -294,13 +295,14 @@ async def split_model_by_color(
                 fits = placement.fits_in_plate
                 extents = [round(float(e), 1) for e in placement.extents_mm]
 
-                # Gerar nome de arquivo
-                safe_color = color.replace("#", "")
-                fname = f"{model_id}_ext{ext_num}_{safe_color}_plate{plate_num}.3mf"
+                # Gerar nome de arquivo amigável baseado no nome do modelo enviado
+                raw_name = Path(model.get("original_filename") or model.get("name") or "modelo").stem
+                safe_model_name = sanitize_storage_key(raw_name).strip("._-") or "modelo"
+                fname = f"{safe_model_name}_cor_{ext_num}.3mf"
                 storage_path = f"pieces/{payload.user_id}/{model_id}/{fname}"
 
                 # Gerar 3MF em memoria com malhas já posicionadas e assentadas
-                model_name = f"{split_result.model_name}_ext{ext_num}"
+                model_name = f"{safe_model_name}_cor_{ext_num}"
                 meshes_to_write = placement.packed_meshes if placement.packed_meshes else [piece.mesh]
 
                 threemf_bytes = write_plate_3mf_bytes(
@@ -313,8 +315,8 @@ async def split_model_by_color(
                 # Upload
                 upload_bytes(supabase, storage_path, threemf_bytes, content_type="model/3mf")
 
-                # URL de download
-                dl_url = create_download_url(supabase, storage_path, expires_in=3600)
+                # URL de download com Content-Disposition amigável
+                dl_url = create_download_url(supabase, storage_path, expires_in=3600, download_filename=fname)
 
                 plates_output.append(PlateOutput(
                     plate_number=plate_num,
@@ -326,6 +328,7 @@ async def split_model_by_color(
                     extents_mm=extents,
                     label=f"Extruder {ext_num}",
                     is_subdivided=False,
+                    file_name=fname,
                 ))
 
         # Gerar também o arquivo .3MF unificado com todas as cores posicionadas e assentadas
@@ -343,17 +346,19 @@ async def split_model_by_color(
                 all_meshes.append(piece_mesh)
                 all_colors.append(placement.color_hex)
 
+        raw_name = Path(model.get("original_filename") or model.get("name") or "modelo").stem
+        safe_model_name = sanitize_storage_key(raw_name).strip("._-") or "modelo"
+        unified_fname = f"{safe_model_name}.3mf"
+
         unified_3mf_bytes = write_plate_3mf_bytes(
             meshes=all_meshes,
             colors=all_colors,
-            model_name=f"{split_result.model_name}_completo",
+            model_name=safe_model_name,
             snap_to_floor=payload.snap_to_floor,
         )
-        safe_model_name = sanitize_storage_key(split_result.model_name)
-        unified_fname = f"{safe_model_name}_completo_todas_cores.3mf"
         unified_path = f"pieces/{payload.user_id}/{model_id}/{unified_fname}"
         upload_bytes(supabase, unified_path, unified_3mf_bytes, content_type="model/3mf")
-        unified_url = create_download_url(supabase, unified_path, expires_in=3600)
+        unified_url = create_download_url(supabase, unified_path, expires_in=3600, download_filename=unified_fname)
 
         # Inicializar manifesto de sessão de corte cumulativo
         manifest_path = f"pieces/{payload.user_id}/{model_id}/session_manifest.json"
@@ -573,17 +578,19 @@ async def _run_subdivide_task(
                     ))
 
             # 8. Gerar arquivo .3MF UNIFICADO com TODAS as peças e TODAS as cores acumuladas
+            raw_name = Path(model.get("original_filename") or model.get("name") or "modelo").stem
+            safe_model_name = sanitize_storage_key(raw_name).strip("._-") or "modelo"
+            unified_fname = f"{safe_model_name}.3mf"
+
             unified_3mf_bytes = write_plate_3mf_bytes(
                 meshes=[m for m, _, _, _, _ in all_pieces_meshes],
                 colors=[c for _, c, _, _, _ in all_pieces_meshes],
-                model_name=f"{split_result.model_name}_completo",
+                model_name=safe_model_name,
                 snap_to_floor=payload.snap_to_floor,
             )
-            safe_model_name = sanitize_storage_key(split_result.model_name)
-            unified_fname = f"{safe_model_name}_completo_todas_cores.3mf"
             unified_storage_path = f"pieces/{payload.user_id}/{model_id}/{unified_fname}"
             upload_bytes(supabase, unified_storage_path, unified_3mf_bytes, content_type="model/3mf")
-            unified_url = create_download_url(supabase, unified_storage_path, expires_in=3600)
+            unified_url = create_download_url(supabase, unified_storage_path, expires_in=3600, download_filename=unified_fname)
 
             # 9. Gerar arquivos individuais por peça e atualizar manifesto
             plates_output: list[PlateOutput] = []
@@ -601,18 +608,18 @@ async def _run_subdivide_task(
                     oversized_count += 1
 
                 # Upload individual .3mf
+                safe_label = sanitize_storage_key(label).strip("._-") or f"parte_{idx+1}"
+                fname = f"{safe_model_name}_{safe_label}.3mf"
+
                 indiv_bytes = write_plate_3mf_bytes(
                     meshes=[mesh_obj],
                     colors=[color_hex],
-                    model_name=f"{safe_model_name}_p{idx+1}",
+                    model_name=f"{safe_model_name}_{safe_label}",
                     snap_to_floor=payload.snap_to_floor,
                 )
-                safe_color = color_hex.replace("#", "")
-                safe_label = sanitize_storage_key(label)
-                fname = f"{model_id}_{safe_label}_{safe_color}.3mf"
                 indiv_path = f"pieces/{payload.user_id}/{model_id}/{fname}"
                 upload_bytes(supabase, indiv_path, indiv_bytes, content_type="model/3mf")
-                indiv_url = create_download_url(supabase, indiv_path, expires_in=3600)
+                indiv_url = create_download_url(supabase, indiv_path, expires_in=3600, download_filename=fname)
 
                 if is_sub:
                     manifest_extruders_update.setdefault(str(ext_num), []).append({
@@ -632,6 +639,7 @@ async def _run_subdivide_task(
                     extents_mm=extents,
                     label=label,
                     is_subdivided=is_sub,
+                    file_name=fname,
                 ))
 
             # Salvar manifesto atualizado no Storage
@@ -802,8 +810,8 @@ async def _run_auto_split_task(
                 raise ValueError("A separação não gerou nenhuma peça válida.")
 
             _set_progress(task_id, 88, "Gerando os arquivos 3MF prontos para impressão...")
-            safe_model_name = sanitize_storage_key(split_result.model_name)
-            suffix = "pinos" if payload.generate_connectors else "cores"
+            raw_name = Path(model.get("original_filename") or model.get("name") or "modelo").stem
+            safe_model_name = sanitize_storage_key(raw_name).strip("._-") or "modelo"
             base_dir = f"pieces/{payload.user_id}/{model_id}"
 
             # Agrupa os resultados por cor (uma entrada por cor)
@@ -818,7 +826,6 @@ async def _run_auto_split_task(
 
             for color_idx, (ext_num, ap_list) in enumerate(sorted(by_color.items()), start=1):
                 color_hex = ap_list[0].color_hex
-                safe_color = color_hex.replace("#", "")
                 all_color_meshes: list[trimesh.Trimesh] = []
                 all_part_labels: list[str] = []
                 has_any_pins = False
@@ -838,15 +845,16 @@ async def _run_auto_split_task(
                 if not color_fits:
                     oversized += 1
 
+                color_fname = f"{safe_model_name}_cor_{ext_num}.3mf"
                 threemf_bytes = write_plate_3mf_bytes(
                     meshes=all_color_meshes,
                     colors=[color_hex] * len(all_color_meshes),
-                    model_name=f"{safe_model_name}_cor{ext_num}_{safe_color}",
+                    model_name=f"{safe_model_name}_cor_{ext_num}",
                     snap_to_floor=False,
                 )
-                storage_path = f"{base_dir}/{model_id}_auto_{suffix}_cor{ext_num}_{safe_color}.3mf"
+                storage_path = f"{base_dir}/{color_fname}"
                 upload_bytes(supabase, storage_path, threemf_bytes, content_type="model/3mf")
-                dl_url = create_download_url(supabase, storage_path, expires_in=3600)
+                dl_url = create_download_url(supabase, storage_path, expires_in=3600, download_filename=color_fname)
 
                 concat_mesh = trimesh.util.concatenate(all_color_meshes) if all_color_meshes else trimesh.Trimesh()
                 extents = [round(float(e), 1) for e in concat_mesh.extents] if len(concat_mesh.vertices) else [0.0, 0.0, 0.0]
@@ -868,21 +876,22 @@ async def _run_auto_split_task(
                         is_subdivided=is_any_subdivided,
                         part_labels=all_part_labels,
                         has_connectors=has_any_pins,
+                        file_name=color_fname,
                     )
                 )
                 unified_meshes.append(center_and_ground(concat_mesh))
                 unified_colors.append(color_hex)
 
+            unified_fname = f"{safe_model_name}.3mf"
             unified_bytes = write_plate_3mf_bytes(
                 meshes=unified_meshes,
                 colors=unified_colors,
-                model_name=f"{split_result.model_name}_completo",
+                model_name=safe_model_name,
                 snap_to_floor=True,
             )
-            unified_fname = f"{safe_model_name}_completo_{suffix}.3mf"
             unified_path = f"{base_dir}/{unified_fname}"
             upload_bytes(supabase, unified_path, unified_bytes, content_type="model/3mf")
-            unified_url = create_download_url(supabase, unified_path, expires_in=3600)
+            unified_url = create_download_url(supabase, unified_path, expires_in=3600, download_filename=unified_fname)
 
             return AutoColorSplitResponse(
                 model_id=model_id,
