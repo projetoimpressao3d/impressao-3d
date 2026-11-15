@@ -154,3 +154,72 @@ def test_tolerance_table_falls_back_to_pla() -> None:
     assert cfg.tolerance_for_material("petg") == pytest.approx(0.25)
     assert cfg.tolerance_for_material("desconhecido") == pytest.approx(0.20)
     assert cfg.tolerance_for_material(None) == pytest.approx(0.20)
+
+
+@pytest.mark.asyncio
+async def test_run_auto_split_task_completes_successfully() -> None:
+    """Verifica que a tarefa assíncrona _run_auto_split_task executa ponta a ponta sem erros de defaultdict."""
+    from unittest.mock import MagicMock, patch
+    from app.routers.color_split import (
+        _TASKS,
+        AutoColorSplitRequest,
+        _run_auto_split_task,
+    )
+
+    top, bot = _painted_box((40.0, 40.0, 300.0))
+    mock_split_res = _split_result([top, bot])
+    mock_info = {
+        "is_painted": True,
+        "total_faces": mock_split_res.total_faces,
+        "filaments": [
+            {"index": 0, "extruder_number": 1, "color_hex": "#FF8800", "face_count": len(top.faces), "face_percentage": 50.0},
+            {"index": 1, "extruder_number": 2, "color_hex": "#FFFFFF", "face_count": len(bot.faces), "face_percentage": 50.0},
+        ],
+    }
+
+    model = {
+        "id": "test-model-123",
+        "name": "charizard_cores",
+        "original_filename": "charizard_cores.3mf",
+        "storage_path": "models/charizard_cores.3mf",
+    }
+    plate = {
+        "build_volume_x_mm": 100.0,
+        "build_volume_y_mm": 100.0,
+        "build_volume_z_mm": 100.0,
+    }
+    payload = AutoColorSplitRequest(
+        user_id="user-456",
+        build_plate_id="plate-789",
+        generate_connectors=True,
+    )
+    task_id = "task-test-abc"
+    _TASKS[task_id] = {"status": "processing", "progress": 0}
+
+    with (
+        patch("app.routers.color_split.create_download_url", return_value="https://fake.url/3mf"),
+        patch("app.routers.color_split.download_to_tempfile", return_value="/tmp/fake.3mf"),
+        patch("app.routers.color_split.parse_3mf_colors", return_value=mock_split_res),
+        patch("app.routers.color_split.get_color_info", return_value=mock_info),
+        patch("app.routers.color_split.upload_bytes") as mock_upload,
+        patch("pathlib.Path.unlink"),
+    ):
+        await _run_auto_split_task(
+            task_id=task_id,
+            model=model,
+            plate=plate,
+            payload=payload,
+            supabase=MagicMock(),
+        )
+
+    task_state = _TASKS[task_id]
+    assert task_state["status"] == "completed", f"Tarefa falhou com erro: {task_state.get('error')}"
+    assert task_state["progress"] == 100
+    res = task_state["result"]
+    assert res["model_id"] == "test-model-123"
+    assert res["unified_file_name"] == "charizard_cores.3mf"
+    assert len(res["plates"]) == 2
+    for p in res["plates"]:
+        assert p["file_name"].startswith("charizard_cores_cor_")
+        assert p["file_name"].endswith(".3mf")
+

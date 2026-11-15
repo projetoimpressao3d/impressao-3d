@@ -11,6 +11,7 @@ import io
 import json
 import logging
 import tempfile
+from collections import defaultdict
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
@@ -771,7 +772,7 @@ async def _run_auto_split_task(
     payload: AutoColorSplitRequest,
     supabase: Client,
 ) -> None:
-    from app.mesh.auto_color_split import center_and_ground, run_auto_color_split
+    from app.mesh.auto_color_split import AutoPlate, center_and_ground, run_auto_color_split
     from app.mesh.connector_config import tolerance_for_material
 
     model_id = str(model["id"])
@@ -844,6 +845,21 @@ async def _run_auto_split_task(
 
                 if not color_fits:
                     oversized += 1
+
+                if len(all_color_meshes) > 1 and len(ap_list) > 1:
+                    # Organiza todas as sub-peças da cor lado a lado em Z=0 sem sobreposição
+                    sum_w = sum(float(m.extents[0]) for m in all_color_meshes) + 50.0
+                    sum_d = sum(float(m.extents[1]) for m in all_color_meshes) + 50.0
+                    packed_meshes, _, _ = pack_components_2d(
+                        all_color_meshes,
+                        max(plate_x * 2.0, sum_w),
+                        max(plate_y * 2.0, sum_d),
+                        plate_z * 2.0,
+                        margin=2.0,
+                        spacing=5.0,
+                        snap_to_floor=True,
+                    )
+                    all_color_meshes = packed_meshes
 
                 color_fname = f"{safe_model_name}_cor_{ext_num}.3mf"
                 threemf_bytes = write_plate_3mf_bytes(
