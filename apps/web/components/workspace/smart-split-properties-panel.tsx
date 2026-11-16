@@ -302,7 +302,7 @@ export function SmartSplitPropertiesPanel({
             onPlateChange={onPlateChange}
             hasSubscription={hasSubscription}
             generateConnectors={selectedOption === "colors_pins"}
-            autoStart={true}
+            autoStart={false}
             onShowPreview={hasColorGroups ? onToggleColorPreview : undefined}
             colorPreviewMode={colorPreviewMode}
             selectedColorPlateIdx={selectedColorPlateIdx}

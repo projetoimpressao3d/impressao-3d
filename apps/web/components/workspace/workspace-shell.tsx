@@ -1039,7 +1039,17 @@ export function WorkspaceShell({
             selectedModel={selectedModel}
             onOpenSelectModelModal={() => setSelectModelModalOpen(true)}
             selectedOption={smartSplitOption}
-            onSelectOption={(opt) => setSmartSplitOption(opt)}
+            onSelectOption={(opt) => {
+              if (opt !== smartSplitOption) {
+                setSmartSplitOption(opt);
+                if (colorSplitResult) {
+                  setActive3DUrl(null);
+                  setColorPreviewMode(false);
+                  setColorSplitResult(null);
+                  setSelectedColorPlateIdx("all");
+                }
+              }
+            }}
             buildPlates={plates}
             selectedPlateId={selectedPlateId}
             onPlateChange={(id) => setSelectedPlateId(id)}

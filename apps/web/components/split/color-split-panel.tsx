@@ -96,7 +96,7 @@ export function ColorSplitPanel({
   selectedPlateId,
   hasSubscription: _hasSubscription,
   generateConnectors = false,
-  autoStart = true,
+  autoStart = false,
   onShowPreview,
   colorPreviewMode = false,
   onSplitCompleted,
