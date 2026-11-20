@@ -19,8 +19,9 @@ class HealthResponse(BaseModel):
     uptime_seconds: float
 
 
-@router.get(
+@router.api_route(
     "/health",
+    methods=["GET", "HEAD"],
     response_model=HealthResponse,
     summary="Health check",
     description="Verifica se o serviço está operacional.",

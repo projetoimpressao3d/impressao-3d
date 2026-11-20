@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from app.deps import get_supabase_client, verify_internal_token
+from app.idle_manager import begin_job, end_job
 from app.mesh.natural_cuts import SuggestedCutPlane, suggest_cuts
 from app.mesh.repair import load_and_normalize
 from app.mesh.skeleton import DEFAULT_SENSITIVITY, StructuralCutPlane, suggest_structural_cuts
@@ -177,6 +178,7 @@ async def _background_separate(
 ) -> None:
     """Job assincrono: extrai esqueleto, detecta apendices, encadeia suggest_cuts."""
     supabase = get_supabase_client()
+    begin_job()
 
     try:
         # 1. Buscar sessao e modelo
@@ -251,6 +253,8 @@ async def _background_separate(
     except Exception as exc:  # noqa: BLE001
         logger.error("_background_separate falhou: %s", exc)
         _fail_session(supabase, session_id, str(exc))
+    finally:
+        end_job()
 
 
 # ---------------------------------------------------------------------------

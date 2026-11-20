@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { ensureBackendReady } from "@/lib/ensure-backend-ready";
 import type { BuildPlate } from "@/types/database";
 
 export interface FilamentInfo {
@@ -128,6 +129,14 @@ export function ColorSplitPanel({
     setSplitResult(null);
 
     try {
+      await ensureBackendReady((wakeStage, wakeProgress) => {
+        setStage(wakeStage);
+        if (wakeProgress !== undefined) {
+          setProgress(wakeProgress);
+        }
+      });
+      setStage("Iniciando separação automática...");
+
       const res = await fetch(`/api/color-split/${modelId}/auto-split`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

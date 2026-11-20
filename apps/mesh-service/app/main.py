@@ -1,11 +1,29 @@
 """Mesh Service — FastAPI application entry point."""
 
+import asyncio
+import contextlib
 import os
+from collections.abc import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import health, analyze, split_sessions, structural, color_split
+from app.idle_manager import idle_monitor_loop, touch_activity, track_activity_middleware
+from app.routers import analyze, color_split, health, split_sessions, structural
+
+
+@contextlib.asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Gerencia ciclo de vida da aplicação e monitor de ociosidade do Render."""
+    touch_activity()
+    monitor_task = asyncio.create_task(idle_monitor_loop())
+    try:
+        yield
+    finally:
+        monitor_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await monitor_task
+
 
 app = FastAPI(
     title="Mesh Service",
@@ -13,6 +31,7 @@ app = FastAPI(
     version="0.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # ---------------------------------------------------------------------------
@@ -28,6 +47,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.middleware("http")(track_activity_middleware)
 
 # ---------------------------------------------------------------------------
 # Routers

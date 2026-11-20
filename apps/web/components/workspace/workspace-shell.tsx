@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import * as THREE from "three";
 import { createClient } from "@/lib/supabase/client";
+import { ensureBackendReady } from "@/lib/ensure-backend-ready";
 import type {
   BuildPlate,
   CutPlaneData,
@@ -430,6 +431,7 @@ export function WorkspaceShell({
     setSplitError(null);
 
     try {
+      await ensureBackendReady();
       const res = await fetch("/api/split-sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -530,6 +532,7 @@ export function WorkspaceShell({
       setSplitError(null);
 
       try {
+        await ensureBackendReady();
         let activeSessionId = sessionId;
         if (!activeSessionId) {
           const res = await fetch("/api/split-sessions", {
@@ -656,6 +659,7 @@ export function WorkspaceShell({
       setSplitError(null);
 
       try {
+        await ensureBackendReady();
         let activeSessionId = sessionId;
         if (!activeSessionId) {
           const res = await fetch("/api/split-sessions", {
